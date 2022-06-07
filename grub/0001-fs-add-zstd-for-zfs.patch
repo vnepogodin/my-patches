@@ -1,0 +1,201 @@
+From 9460145a2d649a32c18a3fb8f9e21600bc01f222 Mon Sep 17 00:00:00 2001
+From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
+Date: Wed, 8 Jun 2022 03:37:55 +0400
+Subject: [PATCH] fs: add zstd for zfs
+
+Add basic support based on zstd examples
+https://github.com/facebook/zstd/tree/dev/examples
+
+Signed-off-by: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
+---
+ Makefile.util.def           |   1 +
+ grub-core/Makefile.core.def |   1 +
+ grub-core/fs/zfs/zfs.c      |   1 +
+ grub-core/fs/zfs/zfs_zstd.c | 126 ++++++++++++++++++++++++++++++++++++
+ include/grub/zfs/zio.h      |   1 +
+ 5 files changed, 130 insertions(+)
+ create mode 100644 grub-core/fs/zfs/zfs_zstd.c
+
+diff --git a/Makefile.util.def b/Makefile.util.def
+index d919c562c..40017a50e 100644
+--- a/Makefile.util.def
++++ b/Makefile.util.def
+@@ -132,6 +132,7 @@ library = {
+   common = grub-core/fs/zfs/zfsinfo.c;
+   common = grub-core/fs/zfs/zfs_lzjb.c;
+   common = grub-core/fs/zfs/zfs_lz4.c;
++  common = grub-core/fs/zfs/zfs_zstd.c;
+   common = grub-core/fs/zfs/zfs_sha256.c;
+   common = grub-core/fs/zfs/zfs_fletcher.c;
+   common = grub-core/lib/envblk.c;
+diff --git a/grub-core/Makefile.core.def b/grub-core/Makefile.core.def
+index 715994872..c4e625383 100644
+--- a/grub-core/Makefile.core.def
++++ b/grub-core/Makefile.core.def
+@@ -1554,6 +1554,7 @@ module = {
+   common = fs/zfs/zfs.c;
+   common = fs/zfs/zfs_lzjb.c;
+   common = fs/zfs/zfs_lz4.c;
++  common = fs/zfs/zfs_zstd.c;
+   common = fs/zfs/zfs_sha256.c;
+   common = fs/zfs/zfs_fletcher.c;
+ };
+diff --git a/grub-core/fs/zfs/zfs.c b/grub-core/fs/zfs/zfs.c
+index ffa0e5863..89217da6e 100644
+--- a/grub-core/fs/zfs/zfs.c
++++ b/grub-core/fs/zfs/zfs.c
+@@ -360,6 +360,7 @@ static decomp_entry_t decomp_table[ZIO_COMPRESS_FUNCTIONS] = {
+   {"gzip-9", zlib_decompress},  /* ZIO_COMPRESS_GZIP9 */
+   {"zle", zle_decompress},      /* ZIO_COMPRESS_ZLE   */
+   {"lz4", lz4_decompress},      /* ZIO_COMPRESS_LZ4   */
++  {"zstd", zstd_decompress},      /* ZIO_COMPRESS_ZSTD   */
+ };
+ 
+ static grub_err_t zio_read_data (blkptr_t * bp, grub_zfs_endian_t endian,
+diff --git a/grub-core/fs/zfs/zfs_zstd.c b/grub-core/fs/zfs/zfs_zstd.c
+new file mode 100644
+index 000000000..044c8ee37
+--- /dev/null
++++ b/grub-core/fs/zfs/zfs_zstd.c
+@@ -0,0 +1,126 @@
++/*
++ * ZSTD - Fast real-time compression algorithm
++ * Header File
++ * Copyright (C) 2022 Vladislav Nepogodin.
++ * GPLv2 License (https://www.opensource.org/licenses/GPL-2.0.php)
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++/*
++ * Tell zstd to expose functions that aren't part of the stable API, which
++ * aren't safe to use when linking against a dynamic library. We vendor in a
++ * specific zstd version, so we know what we're getting. We need these unstable
++ * functions to provide our own allocator, which uses grub_malloc(), to zstd.
++ */
++#define ZSTD_STATIC_LINKING_ONLY
++
++#include <grub/err.h>
++#include <grub/mm.h>
++#include <grub/misc.h>
++#include <grub/types.h>
++#include <zstd.h>
++
++#define ZSTD_ZFS_MAX_WINDOWLOG 10
++#define ZSTD_ZFS_MAX_INPUT     (1 << ZSTD_ZFS_MAX_WINDOWLOG)
++
++static void *grub_zstd_malloc (void *state __attribute__((unused)), size_t size)
++{
++  return grub_malloc (size);
++}
++
++static void grub_zstd_free (void *state __attribute__((unused)), void *address)
++{
++  return grub_free (address);
++}
++
++static ZSTD_customMem grub_zstd_allocator (void)
++{
++  ZSTD_customMem allocator;
++
++  allocator.customAlloc = &grub_zstd_malloc;
++  allocator.customFree = &grub_zstd_free;
++  allocator.opaque = NULL;
++
++  return allocator;
++}
++
++/* Decompression functions */
++grub_err_t
++zstd_decompress(void *s_start, void *d_start, grub_size_t s_len, grub_size_t d_len);
++
++grub_err_t
++zstd_decompress(void *s_start, void *d_start, grub_size_t s_len, grub_size_t d_len)
++{
++    void *allocated = NULL;
++    char *otmpbuf = (char*)d_start;
++    grub_size_t otmpsize = d_len;
++    ZSTD_DCtx *dctx = NULL;
++    grub_size_t zstd_ret;
++    grub_ssize_t ret = -1;
++
++    /*
++     * Zstd will fail if it can't fit the entire output in the destination
++     * buffer, so if osize isn't large enough, allocate a temporary buffer.
++     */
++    if (otmpsize < ZSTD_ZFS_MAX_INPUT) {
++       allocated = grub_malloc (ZSTD_ZFS_MAX_INPUT);
++       if (!allocated) {
++	      grub_error (GRUB_ERR_OUT_OF_MEMORY, "failed allocate a zstd buffer");
++	      goto err;
++	   }
++       otmpbuf = (char *) allocated;
++       otmpsize = ZSTD_ZFS_MAX_INPUT;
++    }
++
++    /* Create the ZSTD_DCtx. */
++    dctx = ZSTD_createDCtx_advanced (grub_zstd_allocator ());
++    if (!dctx) {
++        /* ZSTD_createDCtx_advanced() only fails if it is out of memory. */
++        grub_error (GRUB_ERR_OUT_OF_MEMORY, "failed to create a zstd context");
++        goto err;
++    }
++
++    /*
++     * Get the real input size, there may be junk at the
++     * end of the frame.
++     */
++    s_len = ZSTD_findFrameCompressedSize (s_start, s_len);
++    if (ZSTD_isError (s_len)) {
++        grub_error (GRUB_ERR_BAD_COMPRESSED_DATA, "zstd data corrupted");
++        goto err;
++    }
++
++    /* Decompress and check for errors. */
++    zstd_ret = ZSTD_decompressDCtx (dctx, otmpbuf, otmpsize, s_start, s_len);
++    if (ZSTD_isError (zstd_ret)) {
++        grub_error (GRUB_ERR_BAD_COMPRESSED_DATA, "zstd data corrupted");
++        goto err;
++    }
++
++    /*
++     * Move the requested data into the obuf. obuf may be equal
++     * to otmpbuf, which is why grub_memmove() is required.
++     */
++    grub_memmove (d_start, otmpbuf, d_len);
++    ret = osize;
++
++err:
++    grub_free (allocated);
++    ZSTD_freeDCtx (dctx);
++
++    return ret;
++}
+diff --git a/include/grub/zfs/zio.h b/include/grub/zfs/zio.h
+index 19ce136bb..997b0c4d4 100644
+--- a/include/grub/zfs/zio.h
++++ b/include/grub/zfs/zio.h
+@@ -89,6 +89,7 @@ enum zio_compress {
+ 	ZIO_COMPRESS_GZIP9,
+ 	ZIO_COMPRESS_ZLE,
+ 	ZIO_COMPRESS_LZ4,
++	ZIO_COMPRESS_ZSTD,
+ 	ZIO_COMPRESS_FUNCTIONS
+ };
+ 
+-- 
+2.36.1
+
