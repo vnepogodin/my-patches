@@ -1,4 +1,4 @@
-From 9460145a2d649a32c18a3fb8f9e21600bc01f222 Mon Sep 17 00:00:00 2001
+From 5ce2b2d091aeddd5edf5651c3edd912668f8bb04 Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
 Date: Wed, 8 Jun 2022 03:37:55 +0400
 Subject: [PATCH] fs: add zstd for zfs
@@ -10,10 +10,10 @@ Signed-off-by: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
 ---
  Makefile.util.def           |   1 +
  grub-core/Makefile.core.def |   1 +
- grub-core/fs/zfs/zfs.c      |   1 +
+ grub-core/fs/zfs/zfs.c      |   5 +-
  grub-core/fs/zfs/zfs_zstd.c | 126 ++++++++++++++++++++++++++++++++++++
  include/grub/zfs/zio.h      |   1 +
- 5 files changed, 130 insertions(+)
+ 5 files changed, 133 insertions(+), 1 deletion(-)
  create mode 100644 grub-core/fs/zfs/zfs_zstd.c
 
 diff --git a/Makefile.util.def b/Makefile.util.def
@@ -41,10 +41,27 @@ index 715994872..c4e625383 100644
    common = fs/zfs/zfs_fletcher.c;
  };
 diff --git a/grub-core/fs/zfs/zfs.c b/grub-core/fs/zfs/zfs.c
-index ffa0e5863..89217da6e 100644
+index ffa0e5863..361e5f6b8 100644
 --- a/grub-core/fs/zfs/zfs.c
 +++ b/grub-core/fs/zfs/zfs.c
-@@ -360,6 +360,7 @@ static decomp_entry_t decomp_table[ZIO_COMPRESS_FUNCTIONS] = {
+@@ -158,13 +158,15 @@ ZAP_LEAF_ENTRY(zap_leaf_phys_t *l, int bs, int idx)
+ 
+ 
+ /*
+- * Decompression Entry - lzjb & lz4
++ * Decompression Entry - lzjb & lz4 & zstd
+  */
+ 
+ extern grub_err_t lzjb_decompress (void *, void *, grub_size_t, grub_size_t);
+ 
+ extern grub_err_t lz4_decompress (void *, void *, grub_size_t, grub_size_t);
+ 
++extern grub_err_t zstd_decompress (void *, void *, grub_size_t, grub_size_t);
++
+ typedef grub_err_t zfs_decomp_func_t (void *s_start, void *d_start,
+ 				      grub_size_t s_len, grub_size_t d_len);
+ typedef struct decomp_entry
+@@ -360,6 +362,7 @@ static decomp_entry_t decomp_table[ZIO_COMPRESS_FUNCTIONS] = {
    {"gzip-9", zlib_decompress},  /* ZIO_COMPRESS_GZIP9 */
    {"zle", zle_decompress},      /* ZIO_COMPRESS_ZLE   */
    {"lz4", lz4_decompress},      /* ZIO_COMPRESS_LZ4   */
