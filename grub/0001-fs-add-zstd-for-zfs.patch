@@ -1,4 +1,4 @@
-From 4af0ee9f625baca067751036a0155cb68d78b761 Mon Sep 17 00:00:00 2001
+From 50f78b4d15aba9c457c08744243f380116840437 Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
 Date: Wed, 8 Jun 2022 03:37:55 +0400
 Subject: [PATCH] fs: add zstd for zfs
@@ -71,7 +71,7 @@ index ffa0e5863..361e5f6b8 100644
  static grub_err_t zio_read_data (blkptr_t * bp, grub_zfs_endian_t endian,
 diff --git a/grub-core/fs/zfs/zfs_zstd.c b/grub-core/fs/zfs/zfs_zstd.c
 new file mode 100644
-index 000000000..649a9e6cd
+index 000000000..97708a910
 --- /dev/null
 +++ b/grub-core/fs/zfs/zfs_zstd.c
 @@ -0,0 +1,303 @@
@@ -170,7 +170,7 @@ index 000000000..649a9e6cd
 +struct levelmap {
 +	grub_int16_t cookie;
 +	enum zio_zstd_levels level;
-+};
++} GRUB_PACKED;
 +
 +
 +/* Level map for converting ZFS internal levels to ZSTD levels and vice versa */
@@ -258,9 +258,10 @@ index 000000000..649a9e6cd
 +	grub_uint8_t level;
 +} version_level_t;
 +
-+/* NOTE: all fields in this header are in little endian order */
++/* NOTE: all fields in this header are in big endian order */
 +struct zstd_header {
-+	char data[];
++	/* contains compressed size */
++	grub_uint32_t size;
 +	/*
 +	 * contains the version and level
 +	 * we have to choose a union here to handle
@@ -268,12 +269,11 @@ index 000000000..649a9e6cd
 +	 * is bitmask encoded.
 +	 */
 +	union {
-+		version_level_t version_level;
 +		grub_uint32_t version_data;
++		version_level_t version_level;
 +	};
-+	/* contains compressed size */
-+	grub_uint32_t size;
-+};
++	char data[];
++} GRUB_PACKED;
 +
 +/* Decompression functions */
 +grub_err_t
