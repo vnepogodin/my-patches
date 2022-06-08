@@ -1,4 +1,4 @@
-From 5ce2b2d091aeddd5edf5651c3edd912668f8bb04 Mon Sep 17 00:00:00 2001
+From 4af0ee9f625baca067751036a0155cb68d78b761 Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
 Date: Wed, 8 Jun 2022 03:37:55 +0400
 Subject: [PATCH] fs: add zstd for zfs
@@ -11,9 +11,9 @@ Signed-off-by: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
  Makefile.util.def           |   1 +
  grub-core/Makefile.core.def |   1 +
  grub-core/fs/zfs/zfs.c      |   5 +-
- grub-core/fs/zfs/zfs_zstd.c | 126 ++++++++++++++++++++++++++++++++++++
+ grub-core/fs/zfs/zfs_zstd.c | 303 ++++++++++++++++++++++++++++++++++++
  include/grub/zfs/zio.h      |   1 +
- 5 files changed, 133 insertions(+), 1 deletion(-)
+ 5 files changed, 310 insertions(+), 1 deletion(-)
  create mode 100644 grub-core/fs/zfs/zfs_zstd.c
 
 diff --git a/Makefile.util.def b/Makefile.util.def
@@ -71,10 +71,10 @@ index ffa0e5863..361e5f6b8 100644
  static grub_err_t zio_read_data (blkptr_t * bp, grub_zfs_endian_t endian,
 diff --git a/grub-core/fs/zfs/zfs_zstd.c b/grub-core/fs/zfs/zfs_zstd.c
 new file mode 100644
-index 000000000..044c8ee37
+index 000000000..649a9e6cd
 --- /dev/null
 +++ b/grub-core/fs/zfs/zfs_zstd.c
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,303 @@
 +/*
 + * ZSTD - Fast real-time compression algorithm
 + * Header File
@@ -114,6 +114,124 @@ index 000000000..044c8ee37
 +#define ZSTD_ZFS_MAX_WINDOWLOG 10
 +#define ZSTD_ZFS_MAX_INPUT     (1 << ZSTD_ZFS_MAX_WINDOWLOG)
 +
++enum zio_zstd_levels {
++	ZIO_ZSTD_LEVEL_INHERIT = 0,
++	ZIO_ZSTD_LEVEL_1,
++#define	ZIO_ZSTD_LEVEL_MIN	ZIO_ZSTD_LEVEL_1
++	ZIO_ZSTD_LEVEL_2,
++	ZIO_ZSTD_LEVEL_3,
++#define	ZIO_ZSTD_LEVEL_DEFAULT	ZIO_ZSTD_LEVEL_3
++	ZIO_ZSTD_LEVEL_4,
++	ZIO_ZSTD_LEVEL_5,
++	ZIO_ZSTD_LEVEL_6,
++	ZIO_ZSTD_LEVEL_7,
++	ZIO_ZSTD_LEVEL_8,
++	ZIO_ZSTD_LEVEL_9,
++	ZIO_ZSTD_LEVEL_10,
++	ZIO_ZSTD_LEVEL_11,
++	ZIO_ZSTD_LEVEL_12,
++	ZIO_ZSTD_LEVEL_13,
++	ZIO_ZSTD_LEVEL_14,
++	ZIO_ZSTD_LEVEL_15,
++	ZIO_ZSTD_LEVEL_16,
++	ZIO_ZSTD_LEVEL_17,
++	ZIO_ZSTD_LEVEL_18,
++	ZIO_ZSTD_LEVEL_19,
++#define	ZIO_ZSTD_LEVEL_MAX	ZIO_ZSTD_LEVEL_19
++	ZIO_ZSTD_LEVEL_RESERVE = 101, /* Leave room for new positive levels */
++	ZIO_ZSTD_LEVEL_FAST, /* Fast levels are negative */
++	ZIO_ZSTD_LEVEL_FAST_1,
++#define	ZIO_ZSTD_LEVEL_FAST_DEFAULT	ZIO_ZSTD_LEVEL_FAST_1
++	ZIO_ZSTD_LEVEL_FAST_2,
++	ZIO_ZSTD_LEVEL_FAST_3,
++	ZIO_ZSTD_LEVEL_FAST_4,
++	ZIO_ZSTD_LEVEL_FAST_5,
++	ZIO_ZSTD_LEVEL_FAST_6,
++	ZIO_ZSTD_LEVEL_FAST_7,
++	ZIO_ZSTD_LEVEL_FAST_8,
++	ZIO_ZSTD_LEVEL_FAST_9,
++	ZIO_ZSTD_LEVEL_FAST_10,
++	ZIO_ZSTD_LEVEL_FAST_20,
++	ZIO_ZSTD_LEVEL_FAST_30,
++	ZIO_ZSTD_LEVEL_FAST_40,
++	ZIO_ZSTD_LEVEL_FAST_50,
++	ZIO_ZSTD_LEVEL_FAST_60,
++	ZIO_ZSTD_LEVEL_FAST_70,
++	ZIO_ZSTD_LEVEL_FAST_80,
++	ZIO_ZSTD_LEVEL_FAST_90,
++	ZIO_ZSTD_LEVEL_FAST_100,
++	ZIO_ZSTD_LEVEL_FAST_500,
++	ZIO_ZSTD_LEVEL_FAST_1000,
++#define	ZIO_ZSTD_LEVEL_FAST_MAX	ZIO_ZSTD_LEVEL_FAST_1000
++	ZIO_ZSTD_LEVEL_AUTO = 251, /* Reserved for future use */
++	ZIO_ZSTD_LEVEL_LEVELS
++};
++
++struct levelmap {
++	grub_int16_t cookie;
++	enum zio_zstd_levels level;
++};
++
++
++/* Level map for converting ZFS internal levels to ZSTD levels and vice versa */
++static struct levelmap zstd_levels[] = {
++	{ZIO_ZSTD_LEVEL_1, ZIO_ZSTD_LEVEL_1},
++	{ZIO_ZSTD_LEVEL_2, ZIO_ZSTD_LEVEL_2},
++	{ZIO_ZSTD_LEVEL_3, ZIO_ZSTD_LEVEL_3},
++	{ZIO_ZSTD_LEVEL_4, ZIO_ZSTD_LEVEL_4},
++	{ZIO_ZSTD_LEVEL_5, ZIO_ZSTD_LEVEL_5},
++	{ZIO_ZSTD_LEVEL_6, ZIO_ZSTD_LEVEL_6},
++	{ZIO_ZSTD_LEVEL_7, ZIO_ZSTD_LEVEL_7},
++	{ZIO_ZSTD_LEVEL_8, ZIO_ZSTD_LEVEL_8},
++	{ZIO_ZSTD_LEVEL_9, ZIO_ZSTD_LEVEL_9},
++	{ZIO_ZSTD_LEVEL_10, ZIO_ZSTD_LEVEL_10},
++	{ZIO_ZSTD_LEVEL_11, ZIO_ZSTD_LEVEL_11},
++	{ZIO_ZSTD_LEVEL_12, ZIO_ZSTD_LEVEL_12},
++	{ZIO_ZSTD_LEVEL_13, ZIO_ZSTD_LEVEL_13},
++	{ZIO_ZSTD_LEVEL_14, ZIO_ZSTD_LEVEL_14},
++	{ZIO_ZSTD_LEVEL_15, ZIO_ZSTD_LEVEL_15},
++	{ZIO_ZSTD_LEVEL_16, ZIO_ZSTD_LEVEL_16},
++	{ZIO_ZSTD_LEVEL_17, ZIO_ZSTD_LEVEL_17},
++	{ZIO_ZSTD_LEVEL_18, ZIO_ZSTD_LEVEL_18},
++	{ZIO_ZSTD_LEVEL_19, ZIO_ZSTD_LEVEL_19},
++	{-1, ZIO_ZSTD_LEVEL_FAST_1},
++	{-2, ZIO_ZSTD_LEVEL_FAST_2},
++	{-3, ZIO_ZSTD_LEVEL_FAST_3},
++	{-4, ZIO_ZSTD_LEVEL_FAST_4},
++	{-5, ZIO_ZSTD_LEVEL_FAST_5},
++	{-6, ZIO_ZSTD_LEVEL_FAST_6},
++	{-7, ZIO_ZSTD_LEVEL_FAST_7},
++	{-8, ZIO_ZSTD_LEVEL_FAST_8},
++	{-9, ZIO_ZSTD_LEVEL_FAST_9},
++	{-10, ZIO_ZSTD_LEVEL_FAST_10},
++	{-20, ZIO_ZSTD_LEVEL_FAST_20},
++	{-30, ZIO_ZSTD_LEVEL_FAST_30},
++	{-40, ZIO_ZSTD_LEVEL_FAST_40},
++	{-50, ZIO_ZSTD_LEVEL_FAST_50},
++	{-60, ZIO_ZSTD_LEVEL_FAST_60},
++	{-70, ZIO_ZSTD_LEVEL_FAST_70},
++	{-80, ZIO_ZSTD_LEVEL_FAST_80},
++	{-90, ZIO_ZSTD_LEVEL_FAST_90},
++	{-100, ZIO_ZSTD_LEVEL_FAST_100},
++	{-500, ZIO_ZSTD_LEVEL_FAST_500},
++	{-1000, ZIO_ZSTD_LEVEL_FAST_1000},
++};
++
++
++static int
++zstd_enum_to_cookie(enum zio_zstd_levels level, grub_int16_t *cookie)
++{
++	for (unsigned int i = 0; i < ARRAY_SIZE(zstd_levels); i++) {
++		if (zstd_levels[i].level == level) {
++			*cookie = zstd_levels[i].cookie;
++			return (0);
++		}
++	}
++
++	/* Invalid/unknown ZSTD level - this should never happen. */
++	return (1);
++}
++
 +static void *grub_zstd_malloc (void *state __attribute__((unused)), size_t size)
 +{
 +  return grub_malloc (size);
@@ -135,6 +253,28 @@ index 000000000..044c8ee37
 +  return allocator;
 +}
 +
++typedef struct {
++	grub_uint32_t version:24;
++	grub_uint8_t level;
++} version_level_t;
++
++/* NOTE: all fields in this header are in little endian order */
++struct zstd_header {
++	char data[];
++	/*
++	 * contains the version and level
++	 * we have to choose a union here to handle
++	 * endian conversation since the version and level
++	 * is bitmask encoded.
++	 */
++	union {
++		version_level_t version_level;
++		grub_uint32_t version_data;
++	};
++	/* contains compressed size */
++	grub_uint32_t size;
++};
++
 +/* Decompression functions */
 +grub_err_t
 +zstd_decompress(void *s_start, void *d_start, grub_size_t s_len, grub_size_t d_len);
@@ -142,12 +282,49 @@ index 000000000..044c8ee37
 +grub_err_t
 +zstd_decompress(void *s_start, void *d_start, grub_size_t s_len, grub_size_t d_len)
 +{
++    const struct zstd_header *hdr = (const struct zstd_header *)s_start;
++    size_t result;
++	grub_uint32_t bufsize;
++	grub_uint8_t zstdlevel;
++	grub_uint32_t version;
++	grub_int16_t levelcookie;
++
 +    void *allocated = NULL;
 +    char *otmpbuf = (char*)d_start;
 +    grub_size_t otmpsize = d_len;
 +    ZSTD_DCtx *dctx = NULL;
 +    grub_size_t zstd_ret;
 +    grub_ssize_t ret = -1;
++
++    struct zstd_header hdr_copy;
++    hdr_copy.version_data = grub_be_to_cpu32(hdr->version_data);
++    /* Read buffer size */
++    bufsize = grub_be_to_cpu32(hdr->size);
++    grub_printf ("DEBUG: buffer size = %x", bufsize);
++
++    /* Read the level */
++    zstdlevel = hdr_copy.version_level.level;
++    grub_printf ("DEBUG: zstdlevel = %x", zstdlevel);
++
++    /*
++	 * We ignore the ZSTD version for now. As soon as incompatibilities
++	 * occurr, it has to be read and handled accordingly.
++	 */
++    version = hdr_copy.version_level.version;
++    grub_printf ("DEBUG: zstd version = %x", version);
++
++    /*
++	 * Convert and check the level
++	 * An invalid level is a strong indicator for data corruption! In such
++	 * case return an error so the upper layers can try to fix it.
++	 */
++    if (zstd_enum_to_cookie(zstdlevel, &levelcookie)) {
++		return grub_error (GRUB_ERR_BAD_FS, "zstd decompression failed");
++	}
++
++    if (bufsize + sizeof (*hdr) > s_len) {
++		return grub_error (GRUB_ERR_BAD_FS, "zstd decompression failed");
++	}
 +
 +    /*
 +     * Zstd will fail if it can't fit the entire output in the destination
@@ -175,14 +352,14 @@ index 000000000..044c8ee37
 +     * Get the real input size, there may be junk at the
 +     * end of the frame.
 +     */
-+    s_len = ZSTD_findFrameCompressedSize (s_start, s_len);
-+    if (ZSTD_isError (s_len)) {
++    bufsize = ZSTD_findFrameCompressedSize (hdr->data, bufsize);
++    if (ZSTD_isError (bufsize)) {
 +        grub_error (GRUB_ERR_BAD_COMPRESSED_DATA, "zstd data corrupted");
 +        goto err;
 +    }
 +
 +    /* Decompress and check for errors. */
-+    zstd_ret = ZSTD_decompressDCtx (dctx, otmpbuf, otmpsize, s_start, s_len);
++    zstd_ret = ZSTD_decompressDCtx (dctx, otmpbuf, otmpsize, hdr->data, bufsize);
 +    if (ZSTD_isError (zstd_ret)) {
 +        grub_error (GRUB_ERR_BAD_COMPRESSED_DATA, "zstd data corrupted");
 +        goto err;
@@ -193,7 +370,7 @@ index 000000000..044c8ee37
 +     * to otmpbuf, which is why grub_memmove() is required.
 +     */
 +    grub_memmove (d_start, otmpbuf, d_len);
-+    ret = osize;
++    ret = d_len;
 +
 +err:
 +    grub_free (allocated);
