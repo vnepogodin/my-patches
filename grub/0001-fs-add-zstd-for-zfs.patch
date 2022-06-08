@@ -1,4 +1,4 @@
-From 50f78b4d15aba9c457c08744243f380116840437 Mon Sep 17 00:00:00 2001
+From 1fb0f13cd34b93a3fb1e2d888723e8b336a5d6d9 Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
 Date: Wed, 8 Jun 2022 03:37:55 +0400
 Subject: [PATCH] fs: add zstd for zfs
@@ -9,11 +9,11 @@ https://github.com/facebook/zstd/tree/dev/examples
 Signed-off-by: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
 ---
  Makefile.util.def           |   1 +
- grub-core/Makefile.core.def |   1 +
+ grub-core/Makefile.core.def |   2 +
  grub-core/fs/zfs/zfs.c      |   5 +-
  grub-core/fs/zfs/zfs_zstd.c | 303 ++++++++++++++++++++++++++++++++++++
  include/grub/zfs/zio.h      |   1 +
- 5 files changed, 310 insertions(+), 1 deletion(-)
+ 5 files changed, 311 insertions(+), 1 deletion(-)
  create mode 100644 grub-core/fs/zfs/zfs_zstd.c
 
 diff --git a/Makefile.util.def b/Makefile.util.def
@@ -29,17 +29,20 @@ index d919c562c..40017a50e 100644
    common = grub-core/fs/zfs/zfs_fletcher.c;
    common = grub-core/lib/envblk.c;
 diff --git a/grub-core/Makefile.core.def b/grub-core/Makefile.core.def
-index 715994872..c4e625383 100644
+index 715994872..0326ecc8a 100644
 --- a/grub-core/Makefile.core.def
 +++ b/grub-core/Makefile.core.def
-@@ -1554,6 +1554,7 @@ module = {
+@@ -1554,8 +1554,10 @@ module = {
    common = fs/zfs/zfs.c;
    common = fs/zfs/zfs_lzjb.c;
    common = fs/zfs/zfs_lz4.c;
 +  common = fs/zfs/zfs_zstd.c;
    common = fs/zfs/zfs_sha256.c;
    common = fs/zfs/zfs_fletcher.c;
++  cppflags = '-I$(srcdir)/lib/zstd';
  };
+ 
+ module = {
 diff --git a/grub-core/fs/zfs/zfs.c b/grub-core/fs/zfs/zfs.c
 index ffa0e5863..361e5f6b8 100644
 --- a/grub-core/fs/zfs/zfs.c
