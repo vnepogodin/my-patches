@@ -1,6 +1,6 @@
-From d21c72861cfb09a2b5a9071637b5d68b519747a3 Mon Sep 17 00:00:00 2001
+From 2a72a5e32ef7a859e537f6c50eb8196299d1e74e Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
-Date: Wed, 8 Jun 2022 04:11:58 +0400
+Date: Mon, 1 Aug 2022 18:23:36 +0400
 Subject: [PATCH] security
 
 Use of gnu attributes.
@@ -12,7 +12,7 @@ Signed-off-by: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
  argp/argp-parse.c                             |   2 +
  argp/argp.h                                   |   2 +
  bits/sysmacros.h                              |   4 +-
- csu/libc-tls.c                                |   4 +-
+ csu/libc-tls.c                                |   2 +-
  ctype/ctype-c99_l.c                           |   2 +-
  ctype/ctype-extn.c                            |   4 +-
  ctype/ctype_l.c                               |  28 ++---
@@ -20,7 +20,6 @@ Signed-off-by: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
  elf/dl-cache.c                                |   1 +
  elf/dl-load.c                                 |   2 +
  elf/dl-lookup-direct.c                        |   1 +
- elf/dl-lookup.c                               |   1 +
  elf/dl-minimal-malloc.c                       |   2 +
  elf/dl-open.c                                 |   2 +
  elf/dl-sysdep-open.h                          |   1 +
@@ -110,7 +109,6 @@ Signed-off-by: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
  sysdeps/posix/sprofil.c                       |   1 +
  sysdeps/unix/sysv/linux/cmsg_nxthdr.c         |   1 +
  sysdeps/unix/sysv/linux/dirfd.c               |   2 +-
- sysdeps/unix/sysv/linux/dl-osinfo.h           |   4 +-
  sysdeps/unix/sysv/linux/getclktck.c           |   1 +
  sysdeps/unix/sysv/linux/getsourcefilter.c     |   2 +-
  sysdeps/unix/sysv/linux/pathconf.c            |   6 +-
@@ -141,10 +139,10 @@ Signed-off-by: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
  wctype/wctrans_l.c                            |   2 +-
  wctype/wctype.c                               |   2 +-
  wctype/wctype_l.c                             |   2 +-
- 133 files changed, 270 insertions(+), 226 deletions(-)
+ 131 files changed, 266 insertions(+), 223 deletions(-)
 
 diff --git a/argp/argp-help.c b/argp/argp-help.c
-index 90a2795c..060bba95 100644
+index 90a2795cef..060bba9594 100644
 --- a/argp/argp-help.c
 +++ b/argp/argp-help.c
 @@ -698,6 +698,7 @@ hol_sibling_cluster_cmp (const struct hol_cluster *cl1,
@@ -188,7 +186,7 @@ index 90a2795c..060bba95 100644
  {
    size_t levels = 0;
 diff --git a/argp/argp-parse.c b/argp/argp-parse.c
-index 68dc4541..2c687756 100644
+index 68dc45417b..2c687756e0 100644
 --- a/argp/argp-parse.c
 +++ b/argp/argp-parse.c
 @@ -197,6 +197,7 @@ static const struct argp argp_version_argp =
@@ -208,7 +206,7 @@ index 68dc4541..2c687756 100644
  {
    if (state)
 diff --git a/argp/argp.h b/argp/argp.h
-index d6a04069..2155653d 100644
+index d6a04069d5..2155653dd7 100644
 --- a/argp/argp.h
 +++ b/argp/argp.h
 @@ -529,6 +529,7 @@ __argp_usage (const struct argp_state *__state)
@@ -228,7 +226,7 @@ index d6a04069..2155653d 100644
  {
    return !__opt->key && !__opt->name && !__opt->doc && !__opt->group;
 diff --git a/bits/sysmacros.h b/bits/sysmacros.h
-index cd764724..473e0387 100644
+index cd764724ac..473e038756 100644
 --- a/bits/sysmacros.h
 +++ b/bits/sysmacros.h
 @@ -41,7 +41,7 @@
@@ -250,19 +248,10 @@ index cd764724..473e0387 100644
    }
  
 diff --git a/csu/libc-tls.c b/csu/libc-tls.c
-index bef92a75..a26485e1 100644
+index 0a216c5502..70475ff907 100644
 --- a/csu/libc-tls.c
 +++ b/csu/libc-tls.c
-@@ -145,7 +145,7 @@ __libc_setup_tls (void)
-      _dl_allocate_tls_storage (in elf/dl-tls.c) does using __libc_memalign
-      and dl_tls_static_align.  */
-   tcb_offset = roundup (memsz + GLRO(dl_tls_static_surplus), max_align);
--  tlsblock = __sbrk (tcb_offset + TLS_INIT_TCB_SIZE + max_align);
-+  tlsblock = __sbrk ((intptr_t) (tcb_offset + TLS_INIT_TCB_SIZE + max_align));
- #elif TLS_DTV_AT_TP
-   tcb_offset = roundup (TLS_INIT_TCB_SIZE, align ?: 1);
-   tlsblock = __sbrk (tcb_offset + memsz + max_align
-@@ -169,7 +169,7 @@ __libc_setup_tls (void)
+@@ -174,7 +174,7 @@ __libc_setup_tls (void)
  #if TLS_TCB_AT_TP
    _dl_static_dtv[2].pointer.val = ((char *) tlsblock + tcb_offset
  			       - roundup (memsz, align ?: 1));
@@ -272,7 +261,7 @@ index bef92a75..a26485e1 100644
    _dl_static_dtv[2].pointer.val = (char *) tlsblock + tcb_offset;
    main_map->l_tls_offset = tcb_offset;
 diff --git a/ctype/ctype-c99_l.c b/ctype/ctype-c99_l.c
-index b618b749..22c0f0e6 100644
+index b618b74929..22c0f0e60a 100644
 --- a/ctype/ctype-c99_l.c
 +++ b/ctype/ctype-c99_l.c
 @@ -19,7 +19,7 @@
@@ -285,7 +274,7 @@ index b618b749..22c0f0e6 100644
  {
    return __isctype_l (c, _ISblank, l);
 diff --git a/ctype/ctype-extn.c b/ctype/ctype-extn.c
-index 83500505..dcd96445 100644
+index 83500505b1..dcd9644570 100644
 --- a/ctype/ctype-extn.c
 +++ b/ctype/ctype-extn.c
 @@ -25,12 +25,12 @@
@@ -304,7 +293,7 @@ index 83500505..dcd96445 100644
  {
    return __ctype_toupper[c];
 diff --git a/ctype/ctype_l.c b/ctype/ctype_l.c
-index b34d7cbc..a2442d2e 100644
+index b34d7cbc8f..a2442d2ee9 100644
 --- a/ctype/ctype_l.c
 +++ b/ctype/ctype_l.c
 @@ -24,26 +24,26 @@
@@ -349,7 +338,7 @@ index b34d7cbc..a2442d2e 100644
  {
    return l->__ctype_toupper[c];
 diff --git a/ctype/isctype.c b/ctype/isctype.c
-index dd6ca328..82764987 100644
+index dd6ca32889..8276498739 100644
 --- a/ctype/isctype.c
 +++ b/ctype/isctype.c
 @@ -19,7 +19,7 @@
@@ -362,10 +351,10 @@ index dd6ca328..82764987 100644
  {
    return (((uint16_t *) _NL_CURRENT (LC_CTYPE, _NL_CTYPE_CLASS) + 128)
 diff --git a/elf/dl-cache.c b/elf/dl-cache.c
-index 88bf78ad..f8eefbd0 100644
+index 8bbf110d02..e522547c74 100644
 --- a/elf/dl-cache.c
 +++ b/elf/dl-cache.c
-@@ -402,6 +402,7 @@ _dl_cache_libcmp (const char *p1, const char *p2)
+@@ -399,6 +399,7 @@ _dl_cache_libcmp (const char *p1, const char *p2)
     this function must take care that it does not return references to
     any data in the mapping.  */
  char *
@@ -374,7 +363,7 @@ index 88bf78ad..f8eefbd0 100644
  {
    /* Print a message if the loading of libs is traced.  */
 diff --git a/elf/dl-load.c b/elf/dl-load.c
-index 5b0ff41e..e7220915 100644
+index 1ad0868dad..8b6cfe587d 100644
 --- a/elf/dl-load.c
 +++ b/elf/dl-load.c
 @@ -125,6 +125,7 @@ static const size_t system_dirs_len[] =
@@ -394,7 +383,7 @@ index 5b0ff41e..e7220915 100644
  {
    size_t cnt = 0;
 diff --git a/elf/dl-lookup-direct.c b/elf/dl-lookup-direct.c
-index e74ca956..5d6c03f1 100644
+index e74ca9562f..5d6c03f116 100644
 --- a/elf/dl-lookup-direct.c
 +++ b/elf/dl-lookup-direct.c
 @@ -68,6 +68,7 @@ check_match (const struct link_map *const map, const char *const undef_name,
@@ -405,20 +394,8 @@ index e74ca956..5d6c03f1 100644
  _dl_lookup_direct (struct link_map *map,
                     const char *undef_name, uint32_t new_hash,
                     const char *version, uint32_t version_hash)
-diff --git a/elf/dl-lookup.c b/elf/dl-lookup.c
-index cbf46fda..f1c7e9c6 100644
---- a/elf/dl-lookup.c
-+++ b/elf/dl-lookup.c
-@@ -575,6 +575,7 @@ skip:
- 
- 
- static uint_fast32_t
-+__attribute__((pure))
- dl_new_hash (const char *s)
- {
-   uint_fast32_t h = 5381;
 diff --git a/elf/dl-minimal-malloc.c b/elf/dl-minimal-malloc.c
-index 7cca5420..b775db98 100644
+index 7cca54208d..b775db9852 100644
 --- a/elf/dl-minimal-malloc.c
 +++ b/elf/dl-minimal-malloc.c
 @@ -31,6 +31,7 @@ static void *alloc_ptr, *alloc_end, *alloc_last_block;
@@ -438,7 +415,7 @@ index 7cca5420..b775db98 100644
  {
    /* New memory from the trivial malloc above is always already cleared.
 diff --git a/elf/dl-open.c b/elf/dl-open.c
-index a23e6592..61a0d1b4 100644
+index a23e65926b..61a0d1b467 100644
 --- a/elf/dl-open.c
 +++ b/elf/dl-open.c
 @@ -230,6 +230,7 @@ rtld_hidden_def (_dl_find_dso_for_object);
@@ -458,7 +435,7 @@ index a23e6592..61a0d1b4 100644
  {
    size_t cnt;
 diff --git a/elf/dl-sysdep-open.h b/elf/dl-sysdep-open.h
-index 59ff55de..0e06ac68 100644
+index 59ff55de83..0e06ac6817 100644
 --- a/elf/dl-sysdep-open.h
 +++ b/elf/dl-sysdep-open.h
 @@ -36,6 +36,7 @@
@@ -470,7 +447,7 @@ index 59ff55de..0e06ac68 100644
  {
    assert (*fd == -1);
 diff --git a/iconv/gconv_cache.c b/iconv/gconv_cache.c
-index c772856d..4c69e5a4 100644
+index c772856d1f..4c69e5a446 100644
 --- a/iconv/gconv_cache.c
 +++ b/iconv/gconv_cache.c
 @@ -36,7 +36,7 @@ static size_t cache_size;
@@ -483,7 +460,7 @@ index c772856d..4c69e5a4 100644
  {
    return gconv_cache;
 diff --git a/iconv/gconv_conf.c b/iconv/gconv_conf.c
-index f069e283..4ebb2c4f 100644
+index f069e28323..4ebb2c4ff1 100644
 --- a/iconv/gconv_conf.c
 +++ b/iconv/gconv_conf.c
 @@ -97,7 +97,7 @@ const char *__gconv_path_envvar;
@@ -496,7 +473,7 @@ index f069e283..4ebb2c4f 100644
  {
    struct gconv_module *node = __gconv_modules_db;
 diff --git a/iconv/gconv_db.c b/iconv/gconv_db.c
-index bf385ac7..a2b5ecf3 100644
+index bf385ac7b1..a2b5ecf33a 100644
 --- a/iconv/gconv_db.c
 +++ b/iconv/gconv_db.c
 @@ -42,13 +42,13 @@ __libc_lock_define_initialized (, __gconv_lock)
@@ -525,7 +502,7 @@ index bf385ac7..a2b5ecf3 100644
  {
    const struct gconv_alias *s1 = (const struct gconv_alias *) p1;
 diff --git a/include/dlfcn.h b/include/dlfcn.h
-index ae25f053..20e01105 100644
+index ae25f05303..20e0110596 100644
 --- a/include/dlfcn.h
 +++ b/include/dlfcn.h
 @@ -48,7 +48,7 @@ extern char **__libc_argv attribute_hidden;
@@ -538,7 +515,7 @@ index ae25f053..20e01105 100644
    attribute_hidden;
  extern void *__libc_dlsym   (void *__map, const char *__name)
 diff --git a/include/rounding-mode.h b/include/rounding-mode.h
-index 184fbd2e..8bb1d4d4 100644
+index 184fbd2e9e..8bb1d4d43a 100644
 --- a/include/rounding-mode.h
 +++ b/include/rounding-mode.h
 @@ -39,7 +39,7 @@
@@ -551,7 +528,7 @@ index 184fbd2e..8bb1d4d4 100644
  	    int mode)
  {
 diff --git a/include/time.h b/include/time.h
-index 127347eb..cd3d0c8f 100644
+index a64eff54f5..2277ecb51e 100644
 --- a/include/time.h
 +++ b/include/time.h
 @@ -469,7 +469,7 @@ valid_timeval32_to_timeval64 (const struct __timeval32 tv)
@@ -582,7 +559,7 @@ index 127347eb..cd3d0c8f 100644
  
  static inline struct __timeval64
 diff --git a/inet/deadline.c b/inet/deadline.c
-index 7deb39b0..07c3f3cc 100644
+index 7deb39b0ec..07c3f3cc19 100644
 --- a/inet/deadline.c
 +++ b/inet/deadline.c
 @@ -43,6 +43,7 @@ infinite_deadline (void)
@@ -603,7 +580,7 @@ index 7deb39b0..07c3f3cc 100644
                    struct deadline deadline)
  {
 diff --git a/inet/inet6_rth.c b/inet/inet6_rth.c
-index 20f383cc..b50a5fc0 100644
+index 20f383cc0b..b50a5fc0bf 100644
 --- a/inet/inet6_rth.c
 +++ b/inet/inet6_rth.c
 @@ -152,7 +152,7 @@ inet6_rth_reverse (const void *in, void *out)
@@ -624,7 +601,7 @@ index 20f383cc..b50a5fc0 100644
  {
    struct ip6_rthdr *rthdr = (struct ip6_rthdr *) bp;
 diff --git a/inet/inet_net.c b/inet/inet_net.c
-index e718b215..b557f94a 100644
+index e718b21599..b557f94aac 100644
 --- a/inet/inet_net.c
 +++ b/inet/inet_net.c
 @@ -55,6 +55,7 @@
@@ -636,7 +613,7 @@ index e718b215..b557f94a 100644
  {
  	uint32_t val, base, n, i;
 diff --git a/inet/rcmd.c b/inet/rcmd.c
-index 0d6b5955..99d93b41 100644
+index 0d6b595572..99d93b418a 100644
 --- a/inet/rcmd.c
 +++ b/inet/rcmd.c
 @@ -730,6 +730,7 @@ __icheckuser (const char *luser, const char *ruser)
@@ -648,7 +625,7 @@ index 0d6b5955..99d93b41 100644
  {
      while (*p && isspace (*p)) {
 diff --git a/intl/explodename.c b/intl/explodename.c
-index 04d072d4..21147424 100644
+index 04d072d475..211474249a 100644
 --- a/intl/explodename.c
 +++ b/intl/explodename.c
 @@ -40,7 +40,7 @@
@@ -661,7 +638,7 @@ index 04d072d4..21147424 100644
  {
    while (name[0] != '\0' && name[0] != '_' && name[0] != '@' && name[0] != '.')
 diff --git a/intl/hash-string.c b/intl/hash-string.c
-index d9552ce3..6f3e51f6 100644
+index d9552ce38b..6f3e51f6f5 100644
 --- a/intl/hash-string.c
 +++ b/intl/hash-string.c
 @@ -27,7 +27,7 @@
@@ -674,7 +651,7 @@ index d9552ce3..6f3e51f6 100644
  {
    unsigned long int hval, g;
 diff --git a/intl/l10nflist.c b/intl/l10nflist.c
-index 078a450d..ce4cde25 100644
+index 078a450dfe..ce4cde256e 100644
 --- a/intl/l10nflist.c
 +++ b/intl/l10nflist.c
 @@ -67,7 +67,7 @@ static char *stpcpy (char *dest, const char *src);
@@ -687,7 +664,7 @@ index 078a450d..ce4cde25 100644
  {
    size_t count = 0;
 diff --git a/io/file_change_detection.c b/io/file_change_detection.c
-index a0720c4e..fcc5570b 100644
+index a0720c4e25..fcc5570bae 100644
 --- a/io/file_change_detection.c
 +++ b/io/file_change_detection.c
 @@ -21,7 +21,7 @@
@@ -700,7 +677,7 @@ index a0720c4e..fcc5570b 100644
                       const struct file_change_detection *right)
  {
 diff --git a/io/fts.c b/io/fts.c
-index 283cf179..be6874fa 100644
+index 283cf1791a..be6874fa77 100644
 --- a/io/fts.c
 +++ b/io/fts.c
 @@ -1090,7 +1090,7 @@ fts_padjust (FTSOBJ *sp, FTSENTRY *head)
@@ -713,7 +690,7 @@ index 283cf179..be6874fa 100644
  {
  	size_t len, max;
 diff --git a/libio/__fbufsize.c b/libio/__fbufsize.c
-index beb03226..c5c99c94 100644
+index beb0322617..c5c99c94fe 100644
 --- a/libio/__fbufsize.c
 +++ b/libio/__fbufsize.c
 @@ -17,7 +17,7 @@
@@ -726,7 +703,7 @@ index beb03226..c5c99c94 100644
  {
    if (fp->_mode > 0)
 diff --git a/libio/__flbf.c b/libio/__flbf.c
-index 14791621..2082d2ac 100644
+index 147916210f..2082d2ac2f 100644
 --- a/libio/__flbf.c
 +++ b/libio/__flbf.c
 @@ -17,7 +17,7 @@
@@ -739,7 +716,7 @@ index 14791621..2082d2ac 100644
  {
    return fp->_flags & _IO_LINE_BUF;
 diff --git a/libio/__fpending.c b/libio/__fpending.c
-index f66dc00c..d408cc96 100644
+index f66dc00cd4..d408cc96a6 100644
 --- a/libio/__fpending.c
 +++ b/libio/__fpending.c
 @@ -17,7 +17,7 @@
@@ -752,7 +729,7 @@ index f66dc00c..d408cc96 100644
  {
    if (fp->_mode > 0)
 diff --git a/libio/__freadable.c b/libio/__freadable.c
-index 737819f3..a7b1451f 100644
+index 737819f32d..a7b1451fb9 100644
 --- a/libio/__freadable.c
 +++ b/libio/__freadable.c
 @@ -17,7 +17,7 @@
@@ -765,7 +742,7 @@ index 737819f3..a7b1451f 100644
  {
    return (fp->_flags & _IO_NO_READS) == 0;
 diff --git a/libio/__freading.c b/libio/__freading.c
-index 168e4ed7..1fabb186 100644
+index 168e4ed76e..1fabb186d5 100644
 --- a/libio/__freading.c
 +++ b/libio/__freading.c
 @@ -17,7 +17,7 @@
@@ -778,7 +755,7 @@ index 168e4ed7..1fabb186 100644
  {
    return ((fp->_flags & _IO_NO_WRITES)
 diff --git a/libio/__fwritable.c b/libio/__fwritable.c
-index f1271f82..04e40938 100644
+index f1271f8279..04e409382e 100644
 --- a/libio/__fwritable.c
 +++ b/libio/__fwritable.c
 @@ -17,7 +17,7 @@
@@ -791,7 +768,7 @@ index f1271f82..04e40938 100644
  {
    return (fp->_flags & _IO_NO_WRITES) == 0;
 diff --git a/libio/__fwriting.c b/libio/__fwriting.c
-index 8614f30c..6ece8fec 100644
+index 8614f30ca0..6ece8fec56 100644
 --- a/libio/__fwriting.c
 +++ b/libio/__fwriting.c
 @@ -17,7 +17,7 @@
@@ -804,7 +781,7 @@ index 8614f30c..6ece8fec 100644
  {
    return fp->_flags & (_IO_NO_READS | _IO_CURRENTLY_PUTTING);
 diff --git a/libio/bits/types/struct_FILE.h b/libio/bits/types/struct_FILE.h
-index 1eb42988..77a3f4db 100644
+index 1eb429888c..77a3f4db3b 100644
 --- a/libio/bits/types/struct_FILE.h
 +++ b/libio/bits/types/struct_FILE.h
 @@ -106,7 +106,7 @@ struct _IO_FILE_complete
@@ -817,7 +794,7 @@ index 1eb42988..77a3f4db 100644
  #define _IO_EOF_SEEN 0x0010
  #define __feof_unlocked_body(_fp) (((_fp)->_flags & _IO_EOF_SEEN) != 0)
 diff --git a/libio/feof_u.c b/libio/feof_u.c
-index 5b7477ef..4776b678 100644
+index 5b7477ef54..4776b67861 100644
 --- a/libio/feof_u.c
 +++ b/libio/feof_u.c
 @@ -29,7 +29,7 @@
@@ -830,7 +807,7 @@ index 5b7477ef..4776b678 100644
  {
    CHECK_FILE (fp, EOF);
 diff --git a/libio/ferror_u.c b/libio/ferror_u.c
-index edba404d..dafb38c1 100644
+index edba404d32..dafb38c1b9 100644
 --- a/libio/ferror_u.c
 +++ b/libio/ferror_u.c
 @@ -29,7 +29,7 @@
@@ -843,7 +820,7 @@ index edba404d..dafb38c1 100644
  {
    CHECK_FILE (fp, EOF);
 diff --git a/libio/genops.c b/libio/genops.c
-index 1b629eb6..60443b83 100644
+index 1b629eb695..60443b83bf 100644
 --- a/libio/genops.c
 +++ b/libio/genops.c
 @@ -110,7 +110,7 @@ libc_hidden_def (_IO_link_in)
@@ -900,7 +877,7 @@ index 1b629eb6..60443b83 100644
  {
    return iter->_chain;
 diff --git a/libio/iofwide.c b/libio/iofwide.c
-index 01616e06..a73cb156 100644
+index 01616e06c7..a73cb15657 100644
 --- a/libio/iofwide.c
 +++ b/libio/iofwide.c
 @@ -210,7 +210,7 @@ __libio_codecvt_in (struct _IO_codecvt *codecvt, __mbstate_t *statep,
@@ -913,10 +890,10 @@ index 01616e06..a73cb156 100644
  {
    /* See whether the encoding is stateful.  */
 diff --git a/libio/strops.c b/libio/strops.c
-index 6a9a8846..5e674b57 100644
+index 1cd0bf6c3d..c45273d20b 100644
 --- a/libio/strops.c
 +++ b/libio/strops.c
-@@ -157,7 +157,7 @@ libc_hidden_def (_IO_str_underflow)
+@@ -160,7 +160,7 @@ libc_hidden_def (_IO_str_underflow)
  
  /* The size of the valid part of the buffer.  */
  
@@ -926,7 +903,7 @@ index 6a9a8846..5e674b57 100644
  {
    return ((fp->_IO_write_ptr > fp->_IO_read_end
 diff --git a/libio/wgenops.c b/libio/wgenops.c
-index e7ea75ae..f784744d 100644
+index e7ea75aed2..f784744d56 100644
 --- a/libio/wgenops.c
 +++ b/libio/wgenops.c
 @@ -36,7 +36,7 @@ static int save_for_wbackup (FILE *fp, wchar_t *end_p) __THROW;
@@ -957,10 +934,10 @@ index e7ea75ae..f784744d 100644
  {
    int cur_pos;
 diff --git a/libio/wstrops.c b/libio/wstrops.c
-index 8e44f86c..a35fcdeb 100644
+index 2aec314937..90036cdfbd 100644
 --- a/libio/wstrops.c
 +++ b/libio/wstrops.c
-@@ -153,7 +153,7 @@ _IO_wstr_underflow (FILE *fp)
+@@ -156,7 +156,7 @@ _IO_wstr_underflow (FILE *fp)
  
  
  /* The size of the valid part of the buffer.  */
@@ -970,7 +947,7 @@ index 8e44f86c..a35fcdeb 100644
  {
    struct _IO_wide_data *wd = fp->_wide_data;
 diff --git a/locale/coll-lookup.c b/locale/coll-lookup.c
-index 112bebaf..d0673485 100644
+index 112bebaf4f..d067348591 100644
 --- a/locale/coll-lookup.c
 +++ b/locale/coll-lookup.c
 @@ -18,7 +18,7 @@
@@ -992,7 +969,7 @@ index 112bebaf..d0673485 100644
  {
    uint32_t shift1 = ((const uint32_t *) table)[0];
 diff --git a/locale/localename.c b/locale/localename.c
-index 947be68a..bcbb108c 100644
+index 947be68a25..bcbb108c01 100644
 --- a/locale/localename.c
 +++ b/locale/localename.c
 @@ -19,7 +19,7 @@
@@ -1005,7 +982,7 @@ index 947be68a..bcbb108c 100644
  {
    return _NL_CURRENT_LOCALE->__names[category];
 diff --git a/locale/mb_cur_max.c b/locale/mb_cur_max.c
-index f442ca4c..3912da08 100644
+index f442ca4cbe..3912da08b6 100644
 --- a/locale/mb_cur_max.c
 +++ b/locale/mb_cur_max.c
 @@ -24,7 +24,7 @@
@@ -1018,7 +995,7 @@ index f442ca4c..3912da08 100644
  {
    return _NL_CURRENT_WORD (LC_CTYPE, _NL_CTYPE_MB_CUR_MAX);
 diff --git a/locale/nl_langinfo_l.c b/locale/nl_langinfo_l.c
-index 6aeb5599..2cc2cf1a 100644
+index 6aeb559968..2cc2cf1a88 100644
 --- a/locale/nl_langinfo_l.c
 +++ b/locale/nl_langinfo_l.c
 @@ -26,7 +26,7 @@
@@ -1031,7 +1008,7 @@ index 6aeb5599..2cc2cf1a 100644
  {
    int category = _NL_ITEM_CATEGORY (item);
 diff --git a/locale/outdigitswc.h b/locale/outdigitswc.h
-index 8a24d524..ad16f91a 100644
+index 8a24d52411..ad16f91aad 100644
 --- a/locale/outdigitswc.h
 +++ b/locale/outdigitswc.h
 @@ -24,7 +24,7 @@
@@ -1044,7 +1021,7 @@ index 8a24d524..ad16f91a 100644
  {
    assert (0 <= n && n <= 9);
 diff --git a/locale/programs/xmalloc.c b/locale/programs/xmalloc.c
-index 29ad8e7d..beb23224 100644
+index 29ad8e7d31..beb232242d 100644
 --- a/locale/programs/xmalloc.c
 +++ b/locale/programs/xmalloc.c
 @@ -67,6 +67,7 @@ fixup_null_alloc (size_t n)
@@ -1064,10 +1041,10 @@ index 29ad8e7d..beb23224 100644
  {
    VOID *p;
 diff --git a/malloc/malloc.c b/malloc/malloc.c
-index 1a1ac1d8..413bc358 100644
+index bd3c76ed31..d0ced3ece5 100644
 --- a/malloc/malloc.c
 +++ b/malloc/malloc.c
-@@ -5133,7 +5133,7 @@ musable (void *mem)
+@@ -5130,7 +5130,7 @@ musable (void *mem)
  }
  
  #if IS_IN (libc)
@@ -1077,7 +1054,7 @@ index 1a1ac1d8..413bc358 100644
  {
    if (m == NULL)
 diff --git a/misc/mntent_r.c b/misc/mntent_r.c
-index 3311ba0b..10a7cfaf 100644
+index 3311ba0b50..10a7cfafa5 100644
 --- a/misc/mntent_r.c
 +++ b/misc/mntent_r.c
 @@ -264,7 +264,7 @@ weak_alias (__addmntent, addmntent)
@@ -1090,7 +1067,7 @@ index 3311ba0b..10a7cfaf 100644
  {
    const size_t optlen = strlen (opt);
 diff --git a/nptl/nptl-stack.c b/nptl/nptl-stack.c
-index 20ce78ed..de3e8b0c 100644
+index 20ce78eddb..de3e8b0cb0 100644
 --- a/nptl/nptl-stack.c
 +++ b/nptl/nptl-stack.c
 @@ -137,7 +137,7 @@ libc_hidden_def (__nptl_deallocate_stack)
@@ -1103,7 +1080,7 @@ index 20ce78ed..de3e8b0c 100644
  {
    return (GLRO(dl_pagesize) + __nptl_tls_static_size_for_stack ()
 diff --git a/nptl/pthread_getconcurrency.c b/nptl/pthread_getconcurrency.c
-index 4f5fe0e6..b2675ecb 100644
+index 4f5fe0e63a..b2675ecbb0 100644
 --- a/nptl/pthread_getconcurrency.c
 +++ b/nptl/pthread_getconcurrency.c
 @@ -18,7 +18,7 @@
@@ -1116,7 +1093,7 @@ index 4f5fe0e6..b2675ecb 100644
  {
    return __concurrency_level;
 diff --git a/nptl/pthread_self.c b/nptl/pthread_self.c
-index dac847f6..d2b21b7e 100644
+index dac847f656..d2b21b7ecd 100644
 --- a/nptl/pthread_self.c
 +++ b/nptl/pthread_self.c
 @@ -18,7 +18,7 @@
@@ -1129,7 +1106,7 @@ index dac847f6..d2b21b7e 100644
  {
    return (pthread_t) THREAD_SELF;
 diff --git a/nptl/thrd_current.c b/nptl/thrd_current.c
-index 2aa0debe..80d456e6 100644
+index 2aa0debeb3..80d456e671 100644
 --- a/nptl/thrd_current.c
 +++ b/nptl/thrd_current.c
 @@ -18,7 +18,7 @@
@@ -1142,7 +1119,7 @@ index 2aa0debe..80d456e6 100644
  {
    return (thrd_t) THREAD_SELF;
 diff --git a/nss/nss_action.c b/nss/nss_action.c
-index babea4e7..43d0174f 100644
+index babea4e735..43d0174f3a 100644
 --- a/nss/nss_action.c
 +++ b/nss/nss_action.c
 @@ -69,6 +69,7 @@ action_lists_equal (const struct nss_action *a, const struct nss_action *b,
@@ -1154,7 +1131,7 @@ index babea4e7..43d0174f 100644
  {
    for (struct nss_action_list_wrapper *p = nss_actions; p != NULL; p = p->next)
 diff --git a/nss/nss_database.c b/nss/nss_database.c
-index d56c5b79..1d9e4570 100644
+index f2ed2f2c25..b277edde2e 100644
 --- a/nss/nss_database.c
 +++ b/nss/nss_database.c
 @@ -194,6 +194,7 @@ name_search (const void *left, const void *right)
@@ -1166,19 +1143,19 @@ index d56c5b79..1d9e4570 100644
  {
    database_name *name_entry = bsearch (name, nss_database_name_array,
 diff --git a/nss/nss_hash.c b/nss/nss_hash.c
-index 27a348ea..10734818 100644
+index 1d3787e675..efa659119c 100644
 --- a/nss/nss_hash.c
 +++ b/nss/nss_hash.c
-@@ -28,6 +28,7 @@
+@@ -27,6 +27,7 @@
   * OZ's original sdbm hash
   */
  uint32_t
 +__attribute__((pure))
  __nss_hash (const void *keyarg, size_t len)
  {
-   const unsigned char *key;
+   enum
 diff --git a/nss/valid_field.c b/nss/valid_field.c
-index 6ea0819b..0869e3c2 100644
+index 6ea0819b8b..0869e3c22a 100644
 --- a/nss/valid_field.c
 +++ b/nss/valid_field.c
 @@ -24,6 +24,7 @@ const char __nss_invalid_field_characters[] = NSS_INVALID_FIELD_CHARACTERS;
@@ -1190,7 +1167,7 @@ index 6ea0819b..0869e3c2 100644
  {
    return value == NULL
 diff --git a/nss/valid_list_field.c b/nss/valid_list_field.c
-index cdc112c7..c61256cb 100644
+index cdc112c797..c61256cbb9 100644
 --- a/nss/valid_list_field.c
 +++ b/nss/valid_list_field.c
 @@ -24,6 +24,7 @@ static const char invalid_characters[] = NSS_INVALID_FIELD_CHARACTERS ",";
@@ -1202,10 +1179,10 @@ index cdc112c7..c61256cb 100644
  {
    if (list == NULL)
 diff --git a/posix/glob.c b/posix/glob.c
-index a2b5aaba..53e589f3 100644
+index f6993a3706..9078d3113d 100644
 --- a/posix/glob.c
 +++ b/posix/glob.c
-@@ -261,7 +261,7 @@ is_dir (char const *filename, int flags, glob_t const *pglob)
+@@ -262,7 +262,7 @@ is_dir (char const *filename, int flags, glob_t const *pglob)
  }
  
  /* Find the end of the sub-pattern in a brace expression.  */
@@ -1215,7 +1192,7 @@ index a2b5aaba..53e589f3 100644
  {
    size_t depth = 0;
 diff --git a/posix/glob_internal.h b/posix/glob_internal.h
-index bd023927..1a5c5801 100644
+index bd023927b0..1a5c580111 100644
 --- a/posix/glob_internal.h
 +++ b/posix/glob_internal.h
 @@ -27,7 +27,7 @@ enum
@@ -1228,7 +1205,7 @@ index bd023927..1a5c5801 100644
  {
    const char *p;
 diff --git a/posix/glob_pattern_p.c b/posix/glob_pattern_p.c
-index 4044a508..1da63d9f 100644
+index 4044a50846..1da63d9fb4 100644
 --- a/posix/glob_pattern_p.c
 +++ b/posix/glob_pattern_p.c
 @@ -25,7 +25,7 @@
@@ -1241,7 +1218,7 @@ index 4044a508..1da63d9f 100644
  {
    return __glob_pattern_type (pattern, quote) == GLOBPAT_SPECIAL;
 diff --git a/posix/regexec.c b/posix/regexec.c
-index cffeaf28..2aa84a59 100644
+index cffeaf2845..2aa84a59df 100644
 --- a/posix/regexec.c
 +++ b/posix/regexec.c
 @@ -3869,7 +3869,7 @@ check_node_accept_bytes (const re_dfa_t *dfa, Idx node_idx,
@@ -1263,7 +1240,7 @@ index cffeaf28..2aa84a59 100644
  {
    Idx left, right, mid, last;
 diff --git a/posix/sched_cpualloc.c b/posix/sched_cpualloc.c
-index 62de6177..641248d0 100644
+index 62de6177ee..641248d001 100644
 --- a/posix/sched_cpualloc.c
 +++ b/posix/sched_cpualloc.c
 @@ -19,7 +19,7 @@
@@ -1276,7 +1253,7 @@ index 62de6177..641248d0 100644
  {
    return malloc (CPU_ALLOC_SIZE (count));
 diff --git a/posix/sched_cpucount.c b/posix/sched_cpucount.c
-index 51078be0..bdf96764 100644
+index 51078be01a..bdf96764e6 100644
 --- a/posix/sched_cpucount.c
 +++ b/posix/sched_cpucount.c
 @@ -30,7 +30,7 @@ countbits (__cpu_mask v)
@@ -1289,7 +1266,7 @@ index 51078be0..bdf96764 100644
  {
    int s = 0;
 diff --git a/resolv/gai_error.c b/resolv/gai_error.c
-index 4ba54c96..55ef5c91 100644
+index 4ba54c9617..55ef5c9178 100644
 --- a/resolv/gai_error.c
 +++ b/resolv/gai_error.c
 @@ -19,7 +19,7 @@
@@ -1302,7 +1279,7 @@ index 4ba54c96..55ef5c91 100644
  {
    return req->__return;
 diff --git a/resolv/gai_misc.c b/resolv/gai_misc.c
-index 8ce3c778..c44fad47 100644
+index 8ce3c778eb..c44fad4706 100644
 --- a/resolv/gai_misc.c
 +++ b/resolv/gai_misc.c
 @@ -160,6 +160,7 @@ get_elem (void)
@@ -1314,7 +1291,7 @@ index 8ce3c778..c44fad47 100644
  {
    struct requestlist *runp;
 diff --git a/resolv/res-name-checking.c b/resolv/res-name-checking.c
-index 07a412d8..cae8772e 100644
+index 07a412d8ff..cae8772eca 100644
 --- a/resolv/res-name-checking.c
 +++ b/resolv/res-name-checking.c
 @@ -89,6 +89,7 @@
@@ -1334,7 +1311,7 @@ index 07a412d8..cae8772e 100644
  {
    while (true)
 diff --git a/resolv/res_get_nsaddr.c b/resolv/res_get_nsaddr.c
-index cab4cb14..facb95a0 100644
+index cab4cb1479..facb95a0f9 100644
 --- a/resolv/res_get_nsaddr.c
 +++ b/resolv/res_get_nsaddr.c
 @@ -21,6 +21,7 @@
@@ -1346,7 +1323,7 @@ index cab4cb14..facb95a0 100644
  {
    assert (n < statp->nscount);
 diff --git a/resolv/res_hconf.c b/resolv/res_hconf.c
-index dd09a2a2..19b964d4 100644
+index dd09a2a255..19b964d47d 100644
 --- a/resolv/res_hconf.c
 +++ b/resolv/res_hconf.c
 @@ -81,6 +81,7 @@ struct hconf _res_hconf;
@@ -1366,7 +1343,7 @@ index dd09a2a2..19b964d4 100644
  {
    while (*str && !isspace (*str) && *str != '#' && *str != ',')
 diff --git a/rt/aio_misc.c b/rt/aio_misc.c
-index b4304d0a..350d0b6e 100644
+index b4304d0a6f..350d0b6e2c 100644
 --- a/rt/aio_misc.c
 +++ b/rt/aio_misc.c
 @@ -181,6 +181,7 @@ __aio_free_request (struct requestlist *elem)
@@ -1386,7 +1363,7 @@ index b4304d0a..350d0b6e 100644
  {
    struct requestlist *runp = requests;
 diff --git a/rt/aio_return.c b/rt/aio_return.c
-index fb0990a4..96f4573b 100644
+index fb0990a4a9..96f4573b18 100644
 --- a/rt/aio_return.c
 +++ b/rt/aio_return.c
 @@ -29,7 +29,7 @@
@@ -1399,7 +1376,7 @@ index fb0990a4..96f4573b 100644
  {
    return aiocbp->__return_value;
 diff --git a/signal/allocrtsig.c b/signal/allocrtsig.c
-index ce139594..9e2aed65 100644
+index ce139594db..9e2aed65f4 100644
 --- a/signal/allocrtsig.c
 +++ b/signal/allocrtsig.c
 @@ -29,7 +29,7 @@ static int current_rtmax = __SIGRTMAX;
@@ -1421,7 +1398,7 @@ index ce139594..9e2aed65 100644
  {
  #ifdef __SIGRTMIN
 diff --git a/signal/sigsetops.c b/signal/sigsetops.c
-index 09ee4ee0..56e30052 100644
+index 09ee4ee0ab..56e30052ff 100644
 --- a/signal/sigsetops.c
 +++ b/signal/sigsetops.c
 @@ -25,7 +25,7 @@
@@ -1434,7 +1411,7 @@ index 09ee4ee0..56e30052 100644
  {
    return __sigismember (set, sig);
 diff --git a/stdio-common/printf_fp.c b/stdio-common/printf_fp.c
-index 3a5560fc..025065b6 100644
+index 3a5560fc16..025065b614 100644
 --- a/stdio-common/printf_fp.c
 +++ b/stdio-common/printf_fp.c
 @@ -1285,7 +1285,7 @@ ldbl_strong_alias (___printf_fp, __printf_fp)
@@ -1447,7 +1424,7 @@ index 3a5560fc..025065b6 100644
  {
    unsigned int groups;
 diff --git a/stdlib/cmp.c b/stdlib/cmp.c
-index 18187cc8..b914263e 100644
+index 18187cc8a9..b914263e0d 100644
 --- a/stdlib/cmp.c
 +++ b/stdlib/cmp.c
 @@ -26,7 +26,7 @@ along with the GNU MP Library; see the file COPYING.LIB.  If not, see
@@ -1460,7 +1437,7 @@ index 18187cc8..b914263e 100644
  {
    mp_size_t i;
 diff --git a/stdlib/getenv.c b/stdlib/getenv.c
-index f610d936..87f33dd9 100644
+index f610d936b4..87f33dd945 100644
 --- a/stdlib/getenv.c
 +++ b/stdlib/getenv.c
 @@ -29,7 +29,7 @@
@@ -1473,7 +1450,7 @@ index f610d936..87f33dd9 100644
  {
    char **ep;
 diff --git a/stdlib/grouping.c b/stdlib/grouping.c
-index be7922f5..00f2518e 100644
+index be7922f5fd..00f2518ebc 100644
 --- a/stdlib/grouping.c
 +++ b/stdlib/grouping.c
 @@ -42,7 +42,7 @@
@@ -1486,7 +1463,7 @@ index be7922f5..00f2518e 100644
  __correctly_grouped_prefixwc (const STRING_TYPE *begin, const STRING_TYPE *end,
  			      wchar_t thousands,
 diff --git a/stdlib/mod_1.c b/stdlib/mod_1.c
-index a0bbd32c..659b0258 100644
+index a0bbd32c49..659b025886 100644
 --- a/stdlib/mod_1.c
 +++ b/stdlib/mod_1.c
 @@ -36,7 +36,7 @@ along with the GNU MP Library; see the file COPYING.LIB.  If not, see
@@ -1499,7 +1476,7 @@ index a0bbd32c..659b0258 100644
  	   mp_limb_t divisor_limb)
  {
 diff --git a/string/argz-next.c b/string/argz-next.c
-index f23520df..b545c506 100644
+index f23520df74..b545c506ef 100644
 --- a/string/argz-next.c
 +++ b/string/argz-next.c
 @@ -19,7 +19,7 @@
@@ -1512,7 +1489,7 @@ index f23520df..b545c506 100644
  {
    if (entry)
 diff --git a/string/basename.c b/string/basename.c
-index e2cafb58..2bcd077d 100644
+index e2cafb5864..2bcd077df5 100644
 --- a/string/basename.c
 +++ b/string/basename.c
 @@ -18,7 +18,7 @@
@@ -1525,7 +1502,7 @@ index e2cafb58..2bcd077d 100644
  {
    char *p = strrchr (filename, '/');
 diff --git a/string/str-two-way.h b/string/str-two-way.h
-index 3efc31de..35209e28 100644
+index 3efc31de15..35209e2823 100644
 --- a/string/str-two-way.h
 +++ b/string/str-two-way.h
 @@ -386,7 +386,7 @@ two_way_short_needle (const unsigned char *haystack, size_t haystack_len,
@@ -1538,7 +1515,7 @@ index 3efc31de..35209e28 100644
  		     const unsigned char *needle, size_t needle_len)
  {
 diff --git a/string/strcasecmp.c b/string/strcasecmp.c
-index 5db59ff1..a986a581 100644
+index 5db59ff127..a986a581f8 100644
 --- a/string/strcasecmp.c
 +++ b/string/strcasecmp.c
 @@ -42,7 +42,7 @@
@@ -1551,7 +1528,7 @@ index 5db59ff1..a986a581 100644
  {
  #if defined _LIBC && !defined USE_IN_EXTENDED_LOCALE_MODEL
 diff --git a/string/strcoll_l.c b/string/strcoll_l.c
-index 1b08f11b..05281ae3 100644
+index b366020fc7..0305d64a35 100644
 --- a/string/strcoll_l.c
 +++ b/string/strcoll_l.c
 @@ -253,7 +253,7 @@ out:
@@ -1564,7 +1541,7 @@ index 1b08f11b..05281ae3 100644
  {
    struct __locale_data *current = l->__locales[LC_COLLATE];
 diff --git a/string/string-inlines.c b/string/string-inlines.c
-index 0bba485b..18463b88 100644
+index 0bba485baf..18463b882f 100644
 --- a/string/string-inlines.c
 +++ b/string/string-inlines.c
 @@ -119,7 +119,7 @@ compat_symbol (libc, __old_strsep_3c, __strsep_3c, GLIBC_2_1_1);
@@ -1640,7 +1617,7 @@ index 0bba485b..18463b88 100644
  {
    /* Please note that __accept1 to __accept3 never can be '\0'.  */
 diff --git a/string/strncase.c b/string/strncase.c
-index c8143ae4..d4313467 100644
+index c8143ae4e0..d431346706 100644
 --- a/string/strncase.c
 +++ b/string/strncase.c
 @@ -45,7 +45,7 @@
@@ -1653,7 +1630,7 @@ index c8143ae4..d4313467 100644
  {
  #if defined _LIBC && !defined USE_IN_EXTENDED_LOCALE_MODEL
 diff --git a/string/strstr.c b/string/strstr.c
-index b4b94738..da440ead 100644
+index b4b94738ef..da440ead97 100644
 --- a/string/strstr.c
 +++ b/string/strstr.c
 @@ -35,7 +35,7 @@
@@ -1675,7 +1652,7 @@ index b4b94738..da440ead 100644
  {
    uint32_t h1 = ((uint32_t)ne[0] << 24) | (ne[1] << 16) | (ne[2] << 8);
 diff --git a/string/strxfrm_l.c b/string/strxfrm_l.c
-index 5519c3cf..bd4f1e99 100644
+index 188a3d826a..4fdd92630c 100644
 --- a/string/strxfrm_l.c
 +++ b/string/strxfrm_l.c
 @@ -116,7 +116,7 @@ find_idx (const USTRING_TYPE **us, int32_t *weight_idx,
@@ -1688,7 +1665,7 @@ index 5519c3cf..bd4f1e99 100644
  	       const int pass)
  {
 diff --git a/sysdeps/generic/dl-hash.h b/sysdeps/generic/dl-hash.h
-index 9bc7e3bd..5fd4670e 100644
+index 9bc7e3bd67..5fd4670e85 100644
 --- a/sysdeps/generic/dl-hash.h
 +++ b/sysdeps/generic/dl-hash.h
 @@ -25,6 +25,7 @@
@@ -1700,7 +1677,7 @@ index 9bc7e3bd..5fd4670e 100644
  {
    const unsigned char *name = (const unsigned char *) name_arg;
 diff --git a/sysdeps/ieee754/dbl-64/dbl2mpn.c b/sysdeps/ieee754/dbl-64/dbl2mpn.c
-index ec7cdaba..8d227207 100644
+index ec7cdabaf0..8d2272077e 100644
 --- a/sysdeps/ieee754/dbl-64/dbl2mpn.c
 +++ b/sysdeps/ieee754/dbl-64/dbl2mpn.c
 @@ -57,7 +57,7 @@ __mpn_extract_double (mp_ptr res_ptr, mp_size_t size,
@@ -1713,7 +1690,7 @@ index ec7cdaba..8d227207 100644
  	*expt = 0;
        else
 diff --git a/sysdeps/ieee754/dbl-64/mpn2dbl.c b/sysdeps/ieee754/dbl-64/mpn2dbl.c
-index 7bbea2d9..284d630e 100644
+index 7bbea2d92f..284d630eb0 100644
 --- a/sysdeps/ieee754/dbl-64/mpn2dbl.c
 +++ b/sysdeps/ieee754/dbl-64/mpn2dbl.c
 @@ -24,7 +24,7 @@
@@ -1726,7 +1703,7 @@ index 7bbea2d9..284d630e 100644
  {
    union ieee754_double u;
 diff --git a/sysdeps/ieee754/float128/mpn2float128.c b/sysdeps/ieee754/float128/mpn2float128.c
-index a0bb414f..689a8983 100644
+index a0bb414f83..689a89837b 100644
 --- a/sysdeps/ieee754/float128/mpn2float128.c
 +++ b/sysdeps/ieee754/float128/mpn2float128.c
 @@ -27,7 +27,7 @@
@@ -1739,7 +1716,7 @@ index a0bb414f..689a8983 100644
  {
    union ieee854_float128 u;
 diff --git a/sysdeps/ieee754/flt-32/mpn2flt.c b/sysdeps/ieee754/flt-32/mpn2flt.c
-index 3b6aa952..303196cd 100644
+index 3b6aa95271..303196cd34 100644
 --- a/sysdeps/ieee754/flt-32/mpn2flt.c
 +++ b/sysdeps/ieee754/flt-32/mpn2flt.c
 @@ -24,7 +24,7 @@
@@ -1752,7 +1729,7 @@ index 3b6aa952..303196cd 100644
  {
    union ieee754_float u;
 diff --git a/sysdeps/ieee754/ldbl-96/mpn2ldbl.c b/sysdeps/ieee754/ldbl-96/mpn2ldbl.c
-index 0ffdcebc..3b4a6a55 100644
+index 0ffdcebc1f..3b4a6a55ae 100644
 --- a/sysdeps/ieee754/ldbl-96/mpn2ldbl.c
 +++ b/sysdeps/ieee754/ldbl-96/mpn2ldbl.c
 @@ -25,7 +25,7 @@
@@ -1765,10 +1742,10 @@ index 0ffdcebc..3b4a6a55 100644
  {
    union ieee854_long_double u;
 diff --git a/sysdeps/posix/getaddrinfo.c b/sysdeps/posix/getaddrinfo.c
-index 18dccd59..a8923e82 100644
+index bcff909b2f..9788dcc482 100644
 --- a/sysdeps/posix/getaddrinfo.c
 +++ b/sysdeps/posix/getaddrinfo.c
-@@ -1155,7 +1155,7 @@ static const struct scopeentry
+@@ -1245,7 +1245,7 @@ static const struct scopeentry
  static const struct scopeentry *scopes;
  
  
@@ -1778,7 +1755,7 @@ index 18dccd59..a8923e82 100644
  {
    int scope;
 diff --git a/sysdeps/posix/sprofil.c b/sysdeps/posix/sprofil.c
-index 5f03bd0e..9ea1b514 100644
+index 785b817f96..cdb70ce27a 100644
 --- a/sysdeps/posix/sprofil.c
 +++ b/sysdeps/posix/sprofil.c
 @@ -82,6 +82,7 @@ pc_to_index (size_t pc, size_t offset, unsigned int scale, int prof_uint)
@@ -1790,7 +1767,7 @@ index 5f03bd0e..9ea1b514 100644
  	     int prof_uint)
  {
 diff --git a/sysdeps/unix/sysv/linux/cmsg_nxthdr.c b/sysdeps/unix/sysv/linux/cmsg_nxthdr.c
-index 15b7a3a9..0af04010 100644
+index 15b7a3a925..0af040104b 100644
 --- a/sysdeps/unix/sysv/linux/cmsg_nxthdr.c
 +++ b/sysdeps/unix/sysv/linux/cmsg_nxthdr.c
 @@ -21,6 +21,7 @@
@@ -1802,7 +1779,7 @@ index 15b7a3a9..0af04010 100644
  {
    if ((size_t) cmsg->cmsg_len < sizeof (struct cmsghdr))
 diff --git a/sysdeps/unix/sysv/linux/dirfd.c b/sysdeps/unix/sysv/linux/dirfd.c
-index cd556d21..207ac203 100644
+index cd556d21b2..207ac203b4 100644
 --- a/sysdeps/unix/sysv/linux/dirfd.c
 +++ b/sysdeps/unix/sysv/linux/dirfd.c
 @@ -21,7 +21,7 @@
@@ -1814,23 +1791,8 @@ index cd556d21..207ac203 100644
  __dirfd (DIR *dirp)
  {
    return dirp->fd;
-diff --git a/sysdeps/unix/sysv/linux/dl-osinfo.h b/sysdeps/unix/sysv/linux/dl-osinfo.h
-index 349d93e8..ddeeff0d 100644
---- a/sysdeps/unix/sysv/linux/dl-osinfo.h
-+++ b/sysdeps/unix/sysv/linux/dl-osinfo.h
-@@ -35,8 +35,8 @@
-     if (__glibc_likely (version >= 0))					      \
-       {									      \
- 	if (__builtin_expect (GLRO(dl_osversion) == 0, 1)		      \
--	    || GLRO(dl_osversion) > version)				      \
--	  GLRO(dl_osversion) = version;					      \
-+	    || GLRO(dl_osversion) > (unsigned int) version)				      \
-+	  GLRO(dl_osversion) = (unsigned int) version;					      \
- 									      \
- 	/* Now we can test with the required version.  */		      \
- 	if (__LINUX_KERNEL_VERSION > 0 && version < __LINUX_KERNEL_VERSION)   \
 diff --git a/sysdeps/unix/sysv/linux/getclktck.c b/sysdeps/unix/sysv/linux/getclktck.c
-index 771df88f..323eecbb 100644
+index 771df88f17..323eecbb40 100644
 --- a/sysdeps/unix/sysv/linux/getclktck.c
 +++ b/sysdeps/unix/sysv/linux/getclktck.c
 @@ -25,6 +25,7 @@
@@ -1842,7 +1804,7 @@ index 771df88f..323eecbb 100644
  {
    return GLRO(dl_clktck) ?: SYSTEM_CLK_TCK;
 diff --git a/sysdeps/unix/sysv/linux/getsourcefilter.c b/sysdeps/unix/sysv/linux/getsourcefilter.c
-index 43a31450..26aaeaee 100644
+index 43a3145099..26aaeaee3e 100644
 --- a/sysdeps/unix/sysv/linux/getsourcefilter.c
 +++ b/sysdeps/unix/sysv/linux/getsourcefilter.c
 @@ -57,7 +57,7 @@ static const struct
@@ -1855,7 +1817,7 @@ index 43a31450..26aaeaee 100644
  {
    int first_size_sol = -1;
 diff --git a/sysdeps/unix/sysv/linux/pathconf.c b/sysdeps/unix/sysv/linux/pathconf.c
-index 107cf987..d8b9f6a3 100644
+index dc68648525..371b93b1ef 100644
 --- a/sysdeps/unix/sysv/linux/pathconf.c
 +++ b/sysdeps/unix/sysv/linux/pathconf.c
 @@ -193,7 +193,7 @@ __statfs_link_max (int result, const struct statfs *fsbuf, const char *file,
@@ -1886,7 +1848,7 @@ index 107cf987..d8b9f6a3 100644
  {
    if (result < 0)
 diff --git a/sysdeps/unix/sysv/linux/prof-freq.c b/sysdeps/unix/sysv/linux/prof-freq.c
-index b0b2fd77..eabb14e0 100644
+index b0b2fd7736..eabb14e076 100644
 --- a/sysdeps/unix/sysv/linux/prof-freq.c
 +++ b/sysdeps/unix/sysv/linux/prof-freq.c
 @@ -21,7 +21,7 @@
@@ -1899,7 +1861,7 @@ index b0b2fd77..eabb14e0 100644
  {
    return GLRO(dl_clktck);
 diff --git a/sysdeps/unix/sysv/linux/sigsetops.h b/sysdeps/unix/sysv/linux/sigsetops.h
-index 2d4924ec..3695bf45 100644
+index 2d4924ece6..3695bf4519 100644
 --- a/sysdeps/unix/sysv/linux/sigsetops.h
 +++ b/sysdeps/unix/sysv/linux/sigsetops.h
 @@ -31,7 +31,7 @@
@@ -1924,7 +1886,7 @@ index 2d4924ec..3695bf45 100644
  }
  
 diff --git a/sysdeps/unix/sysv/linux/speed.c b/sysdeps/unix/sysv/linux/speed.c
-index 51622d0d..da271a41 100644
+index 51622d0df4..da271a415a 100644
 --- a/sysdeps/unix/sysv/linux/speed.c
 +++ b/sysdeps/unix/sysv/linux/speed.c
 @@ -33,7 +33,7 @@
@@ -1946,7 +1908,7 @@ index 51622d0d..da271a41 100644
  {
    return ((termios_p->c_iflag & IBAUD0)
 diff --git a/sysdeps/unix/sysv/linux/sysconf-pthread_stack_min.h b/sysdeps/unix/sysv/linux/sysconf-pthread_stack_min.h
-index 4a2c7afd..e553f26d 100644
+index 4a2c7afdea..e553f26d11 100644
 --- a/sysdeps/unix/sysv/linux/sysconf-pthread_stack_min.h
 +++ b/sysdeps/unix/sysv/linux/sysconf-pthread_stack_min.h
 @@ -19,6 +19,7 @@
@@ -1958,7 +1920,7 @@ index 4a2c7afd..e553f26d 100644
  {
    /* sysconf (_SC_THREAD_STACK_MIN) >= sysconf (_SC_MINSIGSTKSZ).  */
 diff --git a/sysdeps/unix/sysv/linux/sysconf-sigstksz.h b/sysdeps/unix/sysv/linux/sysconf-sigstksz.h
-index 71d9bb63..e215ed1e 100644
+index 71d9bb63c4..e215ed1e8a 100644
 --- a/sysdeps/unix/sysv/linux/sysconf-sigstksz.h
 +++ b/sysdeps/unix/sysv/linux/sysconf-sigstksz.h
 @@ -19,6 +19,7 @@
@@ -1970,7 +1932,7 @@ index 71d9bb63..e215ed1e 100644
  {
    long int minsigstacksize = GLRO(dl_minsigstacksize);
 diff --git a/sysdeps/unix/sysv/linux/x86/cpu-features.c b/sysdeps/unix/sysv/linux/x86/cpu-features.c
-index a449cda7..1afa4de5 100644
+index a449cda7dc..1afa4de505 100644
 --- a/sysdeps/unix/sysv/linux/x86/cpu-features.c
 +++ b/sysdeps/unix/sysv/linux/x86/cpu-features.c
 @@ -25,7 +25,7 @@ get_cet_status (void)
@@ -1983,7 +1945,7 @@ index a449cda7..1afa4de5 100644
  }
  
 diff --git a/sysdeps/x86/cacheinfo.c b/sysdeps/x86/cacheinfo.c
-index b04744ac..4d52132d 100644
+index b04744ace3..4d52132df6 100644
 --- a/sysdeps/x86/cacheinfo.c
 +++ b/sysdeps/x86/cacheinfo.c
 @@ -23,7 +23,7 @@
@@ -1996,7 +1958,7 @@ index b04744ac..4d52132d 100644
  {
    const struct cpu_features *cpu_features = __get_cpu_features ();
 diff --git a/sysdeps/x86/cpu-features.c b/sysdeps/x86/cpu-features.c
-index 514226b3..b6a154ae 100644
+index 514226b378..b6a154ae01 100644
 --- a/sysdeps/x86/cpu-features.c
 +++ b/sysdeps/x86/cpu-features.c
 @@ -821,7 +821,7 @@ no_cpuid:
@@ -2009,7 +1971,7 @@ index 514226b3..b6a154ae 100644
    if ((cet_status & GNU_PROPERTY_X86_FEATURE_1_IBT) == 0)
      CPU_FEATURE_UNSET (cpu_features, IBT)
 diff --git a/sysdeps/x86/dl-cacheinfo.h b/sysdeps/x86/dl-cacheinfo.h
-index f64a2fb0..4a28d5b5 100644
+index e9f3382108..ff4ac7ae4e 100644
 --- a/sysdeps/x86/dl-cacheinfo.h
 +++ b/sysdeps/x86/dl-cacheinfo.h
 @@ -169,7 +169,7 @@ intel_check_word (int name, unsigned int value, bool *has_level_2,
@@ -2220,7 +2182,7 @@ index f64a2fb0..4a28d5b5 100644
  
  #if HAVE_TUNABLES
    /* NB: The REP MOVSB threshold must be greater than VEC_SIZE * 8.  */
-@@ -929,11 +929,11 @@ dl_init_cacheinfo (struct cpu_features *cpu_features)
+@@ -917,11 +917,11 @@ dl_init_cacheinfo (struct cpu_features *cpu_features)
    tunable_size = TUNABLE_GET (x86_non_temporal_threshold, long int, NULL);
    /* NB: Ignore the default value 0.  */
    if (tunable_size != 0)
@@ -2235,7 +2197,7 @@ index f64a2fb0..4a28d5b5 100644
    /* NB: The default value of the x86_rep_stosb_threshold tunable is the
       same as the default value of __x86_rep_stosb_threshold and the
 diff --git a/sysdeps/x86/ldbl2mpn.c b/sysdeps/x86/ldbl2mpn.c
-index d0dc5604..f22eff72 100644
+index d0dc5604f9..f22eff7249 100644
 --- a/sysdeps/x86/ldbl2mpn.c
 +++ b/sysdeps/x86/ldbl2mpn.c
 @@ -55,7 +55,7 @@ __mpn_extract_long_double (mp_ptr res_ptr, mp_size_t size,
@@ -2248,7 +2210,7 @@ index d0dc5604..f22eff72 100644
  	*expt = 0;
        else
 diff --git a/sysdeps/x86_64/dl-irel.h b/sysdeps/x86_64/dl-irel.h
-index 412bf18d..72814487 100644
+index 412bf18de3..728144871f 100644
 --- a/sysdeps/x86_64/dl-irel.h
 +++ b/sysdeps/x86_64/dl-irel.h
 @@ -41,7 +41,7 @@ elf_irela (const ElfW(Rela) *reloc)
@@ -2261,7 +2223,7 @@ index 412bf18d..72814487 100644
      }
    else
 diff --git a/wcsmbs/mbsinit.c b/wcsmbs/mbsinit.c
-index db71a5c4..b0a09329 100644
+index db71a5c4b1..b0a09329d7 100644
 --- a/wcsmbs/mbsinit.c
 +++ b/wcsmbs/mbsinit.c
 @@ -29,7 +29,7 @@
@@ -2274,7 +2236,7 @@ index db71a5c4..b0a09329 100644
  {
    return ps == NULL || ps->__count == 0;
 diff --git a/wcsmbs/wcsncmp.c b/wcsmbs/wcsncmp.c
-index dfdaed7b..cbf1ccb2 100644
+index dfdaed7b70..cbf1ccb299 100644
 --- a/wcsmbs/wcsncmp.c
 +++ b/wcsmbs/wcsncmp.c
 @@ -25,7 +25,7 @@
@@ -2287,7 +2249,7 @@ index dfdaed7b..cbf1ccb2 100644
  {
    wchar_t c1 = L'\0';
 diff --git a/wcsmbs/wcsnlen.c b/wcsmbs/wcsnlen.c
-index a0a71bd1..924134bd 100644
+index a0a71bd1d1..924134bd2b 100644
 --- a/wcsmbs/wcsnlen.c
 +++ b/wcsmbs/wcsnlen.c
 @@ -22,7 +22,7 @@
@@ -2300,7 +2262,7 @@ index a0a71bd1..924134bd 100644
  {
    const wchar_t *ret = __wmemchr (s, L'\0', maxlen);
 diff --git a/wcsmbs/wcswidth.c b/wcsmbs/wcswidth.c
-index f6aad01f..f1931695 100644
+index f6aad01fa6..f19316952c 100644
 --- a/wcsmbs/wcswidth.c
 +++ b/wcsmbs/wcswidth.c
 @@ -19,7 +19,7 @@
@@ -2313,7 +2275,7 @@ index f6aad01f..f1931695 100644
  {
    int result = 0;
 diff --git a/wcsmbs/wcwidth.c b/wcsmbs/wcwidth.c
-index e01ab5bf..617534f3 100644
+index e01ab5bf76..617534f3dc 100644
 --- a/wcsmbs/wcwidth.c
 +++ b/wcsmbs/wcwidth.c
 @@ -18,7 +18,7 @@
@@ -2326,7 +2288,7 @@ index e01ab5bf..617534f3 100644
  {
    return internal_wcwidth (ch);
 diff --git a/wcsmbs/wmemcmp.c b/wcsmbs/wmemcmp.c
-index a88e9156..7b7c000c 100644
+index a88e915644..7b7c000c42 100644
 --- a/wcsmbs/wmemcmp.c
 +++ b/wcsmbs/wmemcmp.c
 @@ -21,7 +21,7 @@
@@ -2339,7 +2301,7 @@ index a88e9156..7b7c000c 100644
  {
    wchar_t c1;
 diff --git a/wctype/iswctype.c b/wctype/iswctype.c
-index 50da5e9f..aa8e6910 100644
+index 50da5e9f75..aa8e6910a7 100644
 --- a/wctype/iswctype.c
 +++ b/wctype/iswctype.c
 @@ -22,7 +22,7 @@
@@ -2352,7 +2314,7 @@ index 50da5e9f..aa8e6910 100644
  {
    /* If the user passes in an invalid DESC valid (the one returned from
 diff --git a/wctype/iswctype_l.c b/wctype/iswctype_l.c
-index 216e44fc..4655953d 100644
+index 216e44fc1e..4655953d42 100644
 --- a/wctype/iswctype_l.c
 +++ b/wctype/iswctype_l.c
 @@ -22,7 +22,7 @@
@@ -2365,7 +2327,7 @@ index 216e44fc..4655953d 100644
  {
    /* If the user passes in an invalid DESC valid (the one returned from
 diff --git a/wctype/towctrans.c b/wctype/towctrans.c
-index 5ba83db0..7376e3ca 100644
+index 5ba83db0b6..7376e3ca61 100644
 --- a/wctype/towctrans.c
 +++ b/wctype/towctrans.c
 @@ -21,7 +21,7 @@
@@ -2378,7 +2340,7 @@ index 5ba83db0..7376e3ca 100644
  {
    /* If the user passes in an invalid DESC valid (the one returned from
 diff --git a/wctype/towctrans_l.c b/wctype/towctrans_l.c
-index 3261008f..564ac4c1 100644
+index 3261008f3e..564ac4c1f2 100644
 --- a/wctype/towctrans_l.c
 +++ b/wctype/towctrans_l.c
 @@ -22,7 +22,7 @@
@@ -2391,7 +2353,7 @@ index 3261008f..564ac4c1 100644
  {
    /* If the user passes in an invalid DESC valid (the one returned from
 diff --git a/wctype/wcfuncs.c b/wctype/wcfuncs.c
-index 451575ba..fe6d2f25 100644
+index 451575ba8d..fe6d2f25d0 100644
 --- a/wctype/wcfuncs.c
 +++ b/wctype/wcfuncs.c
 @@ -41,32 +41,32 @@ func (alnum, __ISwalnum)
@@ -2438,7 +2400,7 @@ index 451575ba..fe6d2f25 100644
  
  #undef towlower
 diff --git a/wctype/wcfuncs_l.c b/wctype/wcfuncs_l.c
-index 1cab3410..300a4999 100644
+index 1cab341012..300a49990d 100644
 --- a/wctype/wcfuncs_l.c
 +++ b/wctype/wcfuncs_l.c
 @@ -38,22 +38,22 @@
@@ -2487,7 +2449,7 @@ index 1cab3410..300a4999 100644
  {
    size_t i = locale->__locales[LC_CTYPE]->values[_NL_ITEM_INDEX (_NL_CTYPE_MAP_OFFSET)].word + __TOW_toupper;
 diff --git a/wctype/wctrans.c b/wctype/wctrans.c
-index e9919111..28788b22 100644
+index e9919111b1..28788b2272 100644
 --- a/wctype/wctrans.c
 +++ b/wctype/wctrans.c
 @@ -20,7 +20,7 @@
@@ -2500,7 +2462,7 @@ index e9919111..28788b22 100644
  {
    const char *names;
 diff --git a/wctype/wctrans_l.c b/wctype/wctrans_l.c
-index 057e70c2..f938e071 100644
+index 057e70c25c..f938e07192 100644
 --- a/wctype/wctrans_l.c
 +++ b/wctype/wctrans_l.c
 @@ -20,7 +20,7 @@
@@ -2513,7 +2475,7 @@ index 057e70c2..f938e071 100644
  {
    const char *names;
 diff --git a/wctype/wctype.c b/wctype/wctype.c
-index 8b085c92..8b9bf22c 100644
+index 8b085c9234..8b9bf22cc6 100644
 --- a/wctype/wctype.c
 +++ b/wctype/wctype.c
 @@ -20,7 +20,7 @@
@@ -2526,7 +2488,7 @@ index 8b085c92..8b9bf22c 100644
  {
    const char *names;
 diff --git a/wctype/wctype_l.c b/wctype/wctype_l.c
-index 473d7eda..e1890c72 100644
+index 473d7edae3..e1890c722c 100644
 --- a/wctype/wctype_l.c
 +++ b/wctype/wctype_l.c
 @@ -21,7 +21,7 @@
@@ -2539,5 +2501,5 @@ index 473d7eda..e1890c72 100644
  {
    const char *names;
 -- 
-2.36.1
+2.37.1
 
