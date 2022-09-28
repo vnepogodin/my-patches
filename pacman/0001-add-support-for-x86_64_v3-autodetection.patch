@@ -1,17 +1,17 @@
-From f42c8c539723c95e0c4cb1ac7aef8ec78e7f5871 Mon Sep 17 00:00:00 2001
+From 75081c2be5fdcae802e0f75e546e000927840588 Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
-Date: Thu, 29 Sep 2022 00:25:38 +0400
+Date: Thu, 29 Sep 2022 01:17:40 +0400
 Subject: [PATCH] add support for x86_64_v3 autodetection
 
 ---
- src/pacman/conf.c | 128 ++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 128 insertions(+)
+ src/pacman/conf.c | 126 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 126 insertions(+)
 
 diff --git a/src/pacman/conf.c b/src/pacman/conf.c
-index f9edf75b..2750772f 100644
+index f9edf75b..1d34bbfc 100644
 --- a/src/pacman/conf.c
 +++ b/src/pacman/conf.c
-@@ -396,6 +396,132 @@ cleanup:
+@@ -396,6 +396,130 @@ cleanup:
  }
  
  
@@ -135,20 +135,18 @@ index f9edf75b..2750772f 100644
 +    }
 +	
 +    pm_printf(ALPM_LOG_DEBUG, "config: arch: cpu supports x86_64_v3\n");
-+
-+    char* arch = strdup("x86_64_v3");
-+    config->architectures = alpm_list_add(config->architectures, arch);
++    config->architectures = alpm_list_add(config->architectures, strdup("x86_64_v3"));
 +    return 0;
 +}
 +
  int config_add_architecture(char *arch)
  {
  	if(strcmp(arch, "auto") == 0) {
-@@ -409,6 +535,8 @@ int config_add_architecture(char *arch)
+@@ -409,6 +533,8 @@ int config_add_architecture(char *arch)
  
  	pm_printf(ALPM_LOG_DEBUG, "config: arch: %s\n", arch);
  	config->architectures = alpm_list_add(config->architectures, arch);
-+   config_add_v3_architecture();
++    config_add_v3_architecture();
 +
  	return 0;
  }
