@@ -134,7 +134,7 @@ index f9edf75b..2750772f 100644
 +        return -1;
 +    }
 +	
-+    pm_printf(ALPM_LOG_WARNING, "config: arch: cpu supports x86_64_v3\n");
++    pm_printf(ALPM_LOG_DEBUG, "config: arch: cpu supports x86_64_v3\n");
 +
 +    char* arch = strdup("x86_64_v3");
 +    config->architectures = alpm_list_add(config->architectures, arch);
