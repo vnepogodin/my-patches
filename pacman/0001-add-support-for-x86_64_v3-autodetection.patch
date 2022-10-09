@@ -1,18 +1,18 @@
-From 2ac2f3d302bef2254a57c86cf99cd68053f617d6 Mon Sep 17 00:00:00 2001
+From 6e96139f8ac71ef8fc3aafba6f89fa224e630d80 Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
-Date: Sun, 9 Oct 2022 21:36:53 +0400
+Date: Sun, 9 Oct 2022 22:36:56 +0400
 Subject: [PATCH] add support for x86_64_v3 autodetection
 
 ---
  lib/libalpm/alpm.h             |   7 ++
  lib/libalpm/cpu_capabilities.c | 156 +++++++++++++++++++++++++++++++++
  lib/libalpm/meson.build        |   1 +
- src/pacman/conf.c              |  17 ++--
- 4 files changed, 174 insertions(+), 7 deletions(-)
+ src/pacman/conf.c              |  20 +++--
+ 4 files changed, 177 insertions(+), 7 deletions(-)
  create mode 100644 lib/libalpm/cpu_capabilities.c
 
 diff --git a/lib/libalpm/alpm.h b/lib/libalpm/alpm.h
-index 3304ae77..78f9f322 100644
+index 3304ae77..9f543d91 100644
 --- a/lib/libalpm/alpm.h
 +++ b/lib/libalpm/alpm.h
 @@ -2079,6 +2079,13 @@ int alpm_option_remove_assumeinstalled(alpm_handle_t *handle, const alpm_depend_
@@ -22,7 +22,7 @@ index 3304ae77..78f9f322 100644
 +
 +/** Returns the allowed physical architectures.
 + * @param handle the context handle
-+ * @return the list of physical architectures
++ * @return the list of physical architectures (caller is responsible for alpm_list_free)
 + */
 +alpm_list_t *alpm_option_get_physical_architectures(alpm_handle_t *handle);
 +
@@ -204,7 +204,7 @@ index 607e91a3..34c8a4d2 100644
    deps.h deps.c
    diskspace.h diskspace.c
 diff --git a/src/pacman/conf.c b/src/pacman/conf.c
-index f9edf75b..7947e1b0 100644
+index f9edf75b..5401acb0 100644
 --- a/src/pacman/conf.c
 +++ b/src/pacman/conf.c
 @@ -28,7 +28,6 @@
@@ -215,7 +215,7 @@ index f9edf75b..7947e1b0 100644
  #include <sys/wait.h>
  #include <unistd.h>
  #include <signal.h>
-@@ -399,12 +398,16 @@ cleanup:
+@@ -399,12 +398,19 @@ cleanup:
  int config_add_architecture(char *arch)
  {
  	if(strcmp(arch, "auto") == 0) {
@@ -225,6 +225,8 @@ index f9edf75b..7947e1b0 100644
 -		newarch = strdup(un.machine);
 -		free(arch);
 -		arch = newarch;
++        free(arch);
++
 +        alpm_list_t *physical_arches;
 +        physical_arches = alpm_option_get_physical_architectures(config->handle);
 +
@@ -234,6 +236,7 @@ index f9edf75b..7947e1b0 100644
 +	        pm_printf(ALPM_LOG_DEBUG, "config: arch: %s\n", physical_arch);
 +	        config->architectures = alpm_list_add(config->architectures, physical_arch);
 +        }
++	    alpm_list_free(physical_arches);
 +        return 0;
  	}
  
