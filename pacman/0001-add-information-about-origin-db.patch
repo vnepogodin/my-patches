@@ -1,20 +1,20 @@
-From fa955b6d94c12d2f31a4139c34a4b3ab9be0b954 Mon Sep 17 00:00:00 2001
+From 49dd4f0ac19eaa3dc4c186e9076b3faed339395c Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
-Date: Sat, 22 Oct 2022 03:48:10 +0400
+Date: Sat, 22 Oct 2022 10:59:31 +0400
 Subject: [PATCH] add information about origin db
 
 ---
  lib/libalpm/add.c      |  4 ++++
- lib/libalpm/alpm.h     | 12 ++++++++++++
+ lib/libalpm/alpm.h     |  5 +++++
  lib/libalpm/be_local.c | 13 +++++++++++++
  lib/libalpm/package.c  | 11 +++++++++++
  lib/libalpm/package.h  |  3 +++
  lib/libalpm/sync.c     |  1 +
  src/pacman/package.c   |  6 ++++++
- 7 files changed, 50 insertions(+)
+ 7 files changed, 43 insertions(+)
 
 diff --git a/lib/libalpm/add.c b/lib/libalpm/add.c
-index 774087fa..ede8e62c 100644
+index 774087fa..21dc91b4 100644
 --- a/lib/libalpm/add.c
 +++ b/lib/libalpm/add.c
 @@ -69,6 +69,10 @@ int SYMEXPORT alpm_add_pkg(alpm_handle_t *handle, alpm_pkg_t *pkg)
@@ -29,10 +29,10 @@ index 774087fa..ede8e62c 100644
  	if((dup = alpm_pkg_find(trans->add, pkgname))) {
  		if(dup == pkg) {
 diff --git a/lib/libalpm/alpm.h b/lib/libalpm/alpm.h
-index 3304ae77..1d3bb137 100644
+index 3304ae77..5cf66790 100644
 --- a/lib/libalpm/alpm.h
 +++ b/lib/libalpm/alpm.h
-@@ -2436,6 +2443,11 @@ const char *alpm_pkg_get_version(alpm_pkg_t *pkg);
+@@ -2436,6 +2436,11 @@ const char *alpm_pkg_get_version(alpm_pkg_t *pkg);
   */
  alpm_pkgfrom_t alpm_pkg_get_origin(alpm_pkg_t *pkg);
  
@@ -140,7 +140,7 @@ index 8c95dab3..58a92bd0 100644
  	FREE(pkg->packager);
  	FREE(pkg->md5sum);
 diff --git a/lib/libalpm/package.h b/lib/libalpm/package.h
-index 5ebe6bd1..17a46acd 100644
+index 5ebe6bd1..7a7d3277 100644
 --- a/lib/libalpm/package.h
 +++ b/lib/libalpm/package.h
 @@ -54,6 +54,7 @@ struct pkg_operations {
