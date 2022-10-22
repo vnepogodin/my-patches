@@ -1,6 +1,6 @@
-From 49dd4f0ac19eaa3dc4c186e9076b3faed339395c Mon Sep 17 00:00:00 2001
+From dc7c400be988410da6ffc10e02a0a7fdd82a4026 Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
-Date: Sat, 22 Oct 2022 10:59:31 +0400
+Date: Sat, 22 Oct 2022 11:03:39 +0400
 Subject: [PATCH] add information about origin db
 
 ---
@@ -8,10 +8,10 @@ Subject: [PATCH] add information about origin db
  lib/libalpm/alpm.h     |  5 +++++
  lib/libalpm/be_local.c | 13 +++++++++++++
  lib/libalpm/package.c  | 11 +++++++++++
- lib/libalpm/package.h  |  3 +++
+ lib/libalpm/package.h  |  2 ++
  lib/libalpm/sync.c     |  1 +
  src/pacman/package.c   |  6 ++++++
- 7 files changed, 43 insertions(+)
+ 7 files changed, 42 insertions(+)
 
 diff --git a/lib/libalpm/add.c b/lib/libalpm/add.c
 index 774087fa..21dc91b4 100644
@@ -140,7 +140,7 @@ index 8c95dab3..58a92bd0 100644
  	FREE(pkg->packager);
  	FREE(pkg->md5sum);
 diff --git a/lib/libalpm/package.h b/lib/libalpm/package.h
-index 5ebe6bd1..7a7d3277 100644
+index 5ebe6bd1..b8e22451 100644
 --- a/lib/libalpm/package.h
 +++ b/lib/libalpm/package.h
 @@ -54,6 +54,7 @@ struct pkg_operations {
@@ -151,15 +151,14 @@ index 5ebe6bd1..7a7d3277 100644
  
  	alpm_list_t *(*get_licenses) (alpm_pkg_t *);
  	alpm_list_t *(*get_groups) (alpm_pkg_t *);
-@@ -138,6 +139,8 @@ struct _alpm_pkg_t {
- 	alpm_pkgreason_t reason;
- 	int scriptlet;
- 
+@@ -100,6 +101,7 @@ struct _alpm_pkg_t {
+ 	char *sha256sum;
+ 	char *base64_sig;
+ 	char *arch;
 +	char *installed_db;
-+
- 	alpm_list_t *xdata;
  
- 	/* Bitfield from alpm_dbinfrq_t */
+ 	alpm_time_t builddate;
+ 	alpm_time_t installdate;
 diff --git a/lib/libalpm/sync.c b/lib/libalpm/sync.c
 index 49bde401..502d0e04 100644
 --- a/lib/libalpm/sync.c
