@@ -1,0 +1,4124 @@
+From c6ddee1af69ee7e43594be10a7c47750e6f7b8e7 Mon Sep 17 00:00:00 2001
+From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
+Date: Sun, 19 Feb 2023 17:02:07 +0400
+Subject: [PATCH] rewrite repo-add in rust
+
+---
+ scripts/.gitignore                        |    1 -
+ scripts/meson.build                       |   16 +-
+ scripts/repo-add.sh.in                    |  692 -------------
+ scripts/repo-add/.gitignore               |   37 +
+ scripts/repo-add/Cargo.lock               | 1093 +++++++++++++++++++++
+ scripts/repo-add/Cargo.toml               |   34 +
+ scripts/repo-add/LICENSE                  |  674 +++++++++++++
+ scripts/repo-add/build-aux/dist-vendor.sh |   10 +
+ scripts/repo-add/meson.build              |   14 +
+ scripts/repo-add/rustfmt.toml             |   16 +
+ scripts/repo-add/src/config.rs.in         |    1 +
+ scripts/repo-add/src/main.rs              |  886 +++++++++++++++++
+ scripts/repo-add/src/meson.build          |   50 +
+ scripts/repo-add/src/parse_args.rs        |   86 ++
+ scripts/repo-add/src/pkginfo.rs           |  180 ++++
+ scripts/repo-add/src/utils.rs             |  166 ++++
+ 16 files changed, 3253 insertions(+), 703 deletions(-)
+ delete mode 100644 scripts/repo-add.sh.in
+ create mode 100644 scripts/repo-add/.gitignore
+ create mode 100644 scripts/repo-add/Cargo.lock
+ create mode 100644 scripts/repo-add/Cargo.toml
+ create mode 100644 scripts/repo-add/LICENSE
+ create mode 100755 scripts/repo-add/build-aux/dist-vendor.sh
+ create mode 100644 scripts/repo-add/meson.build
+ create mode 100644 scripts/repo-add/rustfmt.toml
+ create mode 100644 scripts/repo-add/src/config.rs.in
+ create mode 100644 scripts/repo-add/src/main.rs
+ create mode 100644 scripts/repo-add/src/meson.build
+ create mode 100644 scripts/repo-add/src/parse_args.rs
+ create mode 100644 scripts/repo-add/src/pkginfo.rs
+ create mode 100644 scripts/repo-add/src/utils.rs
+
+diff --git a/scripts/.gitignore b/scripts/.gitignore
+index 541fd18d..8142736e 100644
+--- a/scripts/.gitignore
++++ b/scripts/.gitignore
+@@ -3,7 +3,6 @@ makepkg
+ makepkg-template
+ pacman-db-upgrade
+ pacman-key
+-repo-add
+ repo-elephant
+ repo-remove
+ *-wrapper
+diff --git a/scripts/meson.build b/scripts/meson.build
+index d2466523..5937e414 100644
+--- a/scripts/meson.build
++++ b/scripts/meson.build
+@@ -1,8 +1,7 @@
+ wrapped_scripts = [
+   'makepkg.sh.in',
+   'pacman-db-upgrade.sh.in',
+-  'pacman-key.sh.in',
+-  'repo-add.sh.in'
++  'pacman-key.sh.in'
+ ]
+ 
+ scripts = [
+@@ -26,6 +25,7 @@ foreach script : scripts
+     install_dir : get_option('bindir'))
+ endforeach
+ 
++subdir('repo-add')
+ script_wrappers = []
+ foreach script : wrapped_scripts
+   script_shortname = script.split('.')[0]
+@@ -39,10 +39,6 @@ foreach script : wrapped_scripts
+     install_dir : BINDIR)
+ 
+   script_wrappers += [[ script_shortname, internal_script, meson.current_build_dir() ]]
+-
+-  if script_shortname == 'repo-add'
+-    repo_add = internal_script
+-  endif
+ endforeach
+ 
+ foreach symlink : ['repo-remove', 'repo-elephant']
+@@ -63,10 +59,10 @@ endforeach
+ subdir('libmakepkg')
+ 
+ configure_file(
+-	configuration : { 'libmakepkgdir': LIBMAKEPKGDIR, 'PACKAGE_VERSION': PACKAGE_VERSION },
+-	input : 'libmakepkg.pc.in',
+-	output : '@BASENAME@',
+-	install_dir : join_paths(DATAROOTDIR, 'pkgconfig'))
++  configuration : { 'libmakepkgdir': LIBMAKEPKGDIR, 'PACKAGE_VERSION': PACKAGE_VERSION },
++  input : 'libmakepkg.pc.in',
++  output : '@BASENAME@',
++  install_dir : join_paths(DATAROOTDIR, 'pkgconfig'))
+ 
+ custom_target(
+   'bash_completion',
+diff --git a/scripts/repo-add.sh.in b/scripts/repo-add.sh.in
+deleted file mode 100644
+index d3938396..00000000
+--- a/scripts/repo-add.sh.in
++++ /dev/null
+@@ -1,692 +0,0 @@
+-#!/bin/bash
+-#
+-#   repo-add - add a package to a given repo database file
+-#   repo-remove - remove a package entry from a given repo database file
+-#
+-#   Copyright (c) 2006-2021 Pacman Development Team <pacman-dev@archlinux.org>
+-#
+-#   This program is free software; you can redistribute it and/or modify
+-#   it under the terms of the GNU General Public License as published by
+-#   the Free Software Foundation; either version 2 of the License, or
+-#   (at your option) any later version.
+-#
+-#   This program is distributed in the hope that it will be useful,
+-#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+-#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-#   GNU General Public License for more details.
+-#
+-#   You should have received a copy of the GNU General Public License
+-#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+-
+-shopt -s extglob
+-
+-# gettext initialization
+-export TEXTDOMAIN='pacman-scripts'
+-export TEXTDOMAINDIR='@localedir@'
+-
+-declare -r myver='@PACKAGE_VERSION@'
+-declare -r confdir='@sysconfdir@'
+-
+-LIBRARY=${LIBRARY:-'@libmakepkgdir@'}
+-
+-QUIET=0
+-ONLYADDNEW=0
+-RMEXISTING=0
+-SIGN=0
+-KEY=0
+-VERIFY=0
+-REPO_DB_FILE=
+-REPO_DB_PREFIX=
+-REPO_DB_SUFFIX=
+-LOCKFILE=
+-CLEAN_LOCK=0
+-USE_COLOR='y'
+-PREVENT_DOWNGRADE=0
+-
+-# Import libmakepkg
+-source "$LIBRARY"/util/compress.sh
+-source "$LIBRARY"/util/message.sh
+-
+-# ensure we have a sane umask set
+-umask 0022
+-
+-# print usage instructions
+-usage() {
+-	cmd=${0##*/}
+-	printf -- "%s (pacman) %s\n\n" "$cmd" "$myver"
+-	if [[ $cmd == "repo-add" ]] ; then
+-		printf -- "$(gettext "Usage: repo-add [options] <path-to-db> <package> ...\n")"
+-		printf -- "\n"
+-		printf -- "$(gettext "\
+-repo-add will update a package database by reading a package file.\n\
+-Multiple packages to add can be specified on the command line.\n")"
+-		printf -- "\n"
+-		printf -- "$(gettext "Options:\n")"
+-		printf -- "$(gettext "  -n, --new         only add packages that are not already in the database\n")"
+-		printf -- "$(gettext "  -R, --remove      remove old package file from disk after updating database\n")"
+-		printf -- "$(gettext "  -p, --prevent-downgrade  do not add package to database if a newer version is already present\n")"
+-	elif [[ $cmd == "repo-remove" ]] ; then
+-		printf -- "$(gettext "Usage: repo-remove [options] <path-to-db> <packagename> ...\n")"
+-		printf -- "\n"
+-		printf -- "$(gettext "\
+-repo-remove will update a package database by removing the package name\n\
+-specified on the command line from the given repo database. Multiple\n\
+-packages to remove can be specified on the command line.\n")"
+-		printf -- "\n"
+-		printf -- "$(gettext "Options:\n")"
+-	else
+-		printf -- "$(gettext "Please move along, there is nothing to see here.\n")"
+-		return
+-	fi
+-	printf -- "$(gettext "  --nocolor         turn off color in output\n")"
+-	printf -- "$(gettext "  -q, --quiet       minimize output\n")"
+-	printf -- "$(gettext "  -s, --sign        sign database with GnuPG after update\n")"
+-	printf -- "$(gettext "  -k, --key <key>   use the specified key to sign the database\n")"
+-	printf -- "$(gettext "  -v, --verify      verify database's signature before update\n")"
+-	printf -- "$(gettext "\n\
+-See %s(8) for more details and descriptions of the available options.\n")" $cmd
+-	printf "\n"
+-	if [[ $cmd == "repo-add" ]] ; then
+-		printf -- "$(gettext "Example:  repo-add /path/to/repo.db.tar.gz pacman-3.0.0-1-i686.pkg.tar.gz\n")"
+-	elif [[ $cmd == "repo-remove" ]] ; then
+-		printf -- "$(gettext "Example:  repo-remove /path/to/repo.db.tar.gz kernel26\n")"
+-	fi
+-}
+-
+-version() {
+-	cmd=${0##*/}
+-	printf "%s (pacman) %s\n\n" "$cmd" "$myver"
+-	printf -- "Copyright (c) 2006-2021 Pacman Development Team <pacman-dev@archlinux.org>.\n"
+-	printf '\n'
+-	printf -- "$(gettext "\
+-This is free software; see the source for copying conditions.\n\
+-There is NO WARRANTY, to the extent permitted by law.\n")"
+-}
+-
+-
+-# format a metadata entry
+-#		arg1 - Entry name
+-#		...  - value(s)
+-format_entry() {
+-	local field=$1; shift
+-
+-	if [[ $1 ]]; then
+-		printf '%%%s%%\n' "$field"
+-		printf '%s\n' "$@"
+-		printf '\n'
+-	fi
+-}
+-
+-find_pkgentry() {
+-	local pkgname=$1
+-	local pkgentry
+-
+-	for pkgentry in "$tmpdir/db/$pkgname"*; do
+-		name=${pkgentry##*/}
+-		if [[ ${name%-*-*} = "$pkgname" ]]; then
+-			echo $pkgentry
+-			return 0
+-		fi
+-	done
+-	return 1
+-}
+-
+-check_gpg() {
+-	if ! type -p gpg >/dev/null; then
+-		error "$(gettext "Cannot find the gpg binary! Is GnuPG installed?")"
+-		exit 1 # $E_MISSING_PROGRAM
+-	fi
+-
+-	if (( ! VERIFY )); then
+-		if ! gpg --list-secret-key ${GPGKEY:+"$GPGKEY"} &>/dev/null; then
+-			if [[ ! -z $GPGKEY ]]; then
+-				error "$(gettext "The key ${GPGKEY} does not exist in your keyring.")"
+-			elif (( ! KEY )); then
+-				error "$(gettext "There is no key in your keyring.")"
+-			fi
+-			exit 1
+-		fi
+-	fi
+-}
+-
+-# sign the package database once repackaged
+-create_signature() {
+-	(( ! SIGN )) && return
+-	local dbfile=$1
+-	local ret=0
+-	msg "$(gettext "Signing database '%s'...")" "${dbfile##*/.tmp.}"
+-
+-	local SIGNWITHKEY=()
+-	if [[ -n $GPGKEY ]]; then
+-		SIGNWITHKEY=(-u "${GPGKEY}")
+-	fi
+-	gpg --detach-sign --use-agent --no-armor "${SIGNWITHKEY[@]}" "$dbfile" &>/dev/null || ret=$?
+-
+-	if (( ! ret )); then
+-		msg2 "$(gettext "Created signature file '%s'")" "${dbfile##*/.tmp.}.sig"
+-	else
+-		warning "$(gettext "Failed to sign package database file '%s'")" "${dbfile##*/.tmp.}"
+-	fi
+-}
+-
+-# verify the existing package database signature
+-verify_signature() {
+-	(( ! VERIFY )) && return
+-	local dbfile=$1
+-	local ret=0
+-	msg "$(gettext "Verifying database signature...")"
+-
+-	if [[ ! -f $dbfile.sig ]]; then
+-		warning "$(gettext "No existing signature found, skipping verification.")"
+-		return
+-	fi
+-	gpg --verify "$dbfile.sig" || ret=$?
+-	if (( ! ret )); then
+-		msg2 "$(gettext "Database signature file verified.")"
+-	else
+-		error "$(gettext "Database signature was NOT valid!")"
+-		exit 1
+-	fi
+-}
+-
+-verify_repo_extension() {
+-	local junk=()
+-	if [[ $1 = *.db.tar* ]] && get_compression_command "$1" junk; then
+-		return 0
+-	fi
+-
+-	error "$(gettext "'%s' does not have a valid database archive extension.")" "$1"
+-	exit 1
+-}
+-
+-# write an entry to the pacman database
+-#   arg1 - path to package
+-db_write_entry() {
+-	# blank out all variables
+-	local pkgfile=$1
+-	local -a _groups _licenses _replaces _depends _conflicts _provides \
+-		_optdepends _makedepends _checkdepends
+-	local pkgname pkgbase pkgver pkgdesc csize size url arch builddate packager \
+-		md5sum sha256sum pgpsig pgpsigsize
+-
+-	# read info from the zipped package
+-	local line var val
+-	while read -r line; do
+-		[[ ${line:0:1} = '#' ]] && continue
+-		IFS=' =' read -r var val < <(printf '%s\n' "$line")
+-
+-		# normalize whitespace with an extglob
+-		declare "$var=${val//+([[:space:]])/ }"
+-		case $var in
+-			group) _groups+=("$group") ;;
+-			license) _licenses+=("$license") ;;
+-			replaces) _replaces+=("$replaces") ;;
+-			depend) _depends+=("$depend") ;;
+-			conflict) _conflicts+=("$conflict") ;;
+-			provides) _provides+=("$provides") ;;
+-			optdepend) _optdepends+=("$optdepend") ;;
+-			makedepend) _makedepends+=("$makedepend") ;;
+-			checkdepend) _checkdepends+=("$checkdepend") ;;
+-		esac
+-	done< <(bsdtar -xOqf "$pkgfile" .PKGINFO)
+-
+-	# ensure $pkgname and $pkgver variables were found
+-	if [[ -z $pkgname || -z $pkgver ]]; then
+-		error "$(gettext "Invalid package file '%s'.")" "$pkgfile"
+-		return 1
+-	fi
+-
+-	if [[ -d $tmpdir/db/$pkgname-$pkgver ]]; then
+-		warning "$(gettext "An entry for '%s' already existed")" "$pkgname-$pkgver"
+-		if (( ONLYADDNEW )); then
+-			return 0
+-		fi
+-	else
+-		pkgentry=$(find_pkgentry "$pkgname")
+-		if [[ -n $pkgentry ]]; then
+-
+-			local version=$(sed -n '/^%VERSION%$/ {n;p;q}' "$pkgentry/desc")
+-			if (( $(vercmp "$version" "$pkgver") > 0 )); then
+-				warning "$(gettext "A newer version for '%s' is already present in database")" "$pkgname"
+-				if (( PREVENT_DOWNGRADE )); then
+-					return 0
+-				fi
+-			fi
+-			if (( RMEXISTING )); then
+-				local oldfilename="$(sed -n '/^%FILENAME%$/ {n;p;q;}' "$pkgentry/desc")"
+-				local oldfile="$(dirname "$1")/$oldfilename"
+-			fi
+-		fi
+-	fi
+-
+-	# compute base64'd PGP signature
+-	if [[ -f "$pkgfile.sig" ]]; then
+-		if grep -q 'BEGIN PGP SIGNATURE' "$pkgfile.sig"; then
+-			error "$(gettext "Cannot use armored signatures for packages: %s")" "$pkgfile.sig"
+-			return 1
+-		fi
+-		pgpsigsize=$(wc -c < "$pkgfile.sig")
+-		if (( pgpsigsize > 16384 )); then
+-			error "$(gettext "Invalid package signature file '%s'.")" "$pkgfile.sig"
+-			return 1
+-		fi
+-		msg2 "$(gettext "Adding package signature...")"
+-		pgpsig=$(base64 "$pkgfile.sig" | tr -d '\n')
+-	fi
+-
+-	csize=$(wc -c < "$pkgfile")
+-
+-	# compute checksums
+-	msg2 "$(gettext "Computing checksums...")"
+-	md5sum=$(md5sum "$pkgfile")
+-	md5sum=${md5sum%% *}
+-	sha256sum=$(sha256sum "$pkgfile")
+-	sha256sum=${sha256sum%% *}
+-
+-	# remove an existing entry if it exists, ignore failures
+-	db_remove_entry "$pkgname"
+-
+-	# create package directory
+-	pushd "$tmpdir/db" >/dev/null
+-	mkdir "$pkgname-$pkgver"
+-	pushd "$pkgname-$pkgver" >/dev/null
+-
+-	# create desc entry
+-	msg2 "$(gettext "Creating '%s' db entry...")" 'desc'
+-	{
+-		format_entry "FILENAME"  "${1##*/}"
+-		format_entry "NAME"      "$pkgname"
+-		format_entry "BASE"      "$pkgbase"
+-		format_entry "VERSION"   "$pkgver"
+-		format_entry "DESC"      "$pkgdesc"
+-		format_entry "GROUPS"    "${_groups[@]}"
+-		format_entry "CSIZE"     "$csize"
+-		format_entry "ISIZE"     "$size"
+-
+-		# add checksums
+-		format_entry "MD5SUM"    "$md5sum"
+-		format_entry "SHA256SUM" "$sha256sum"
+-
+-		# add PGP sig
+-		format_entry "PGPSIG"    "$pgpsig"
+-
+-		format_entry "URL"       "$url"
+-		format_entry "LICENSE"   "${_licenses[@]}"
+-		format_entry "ARCH"      "$arch"
+-		format_entry "BUILDDATE" "$builddate"
+-		format_entry "PACKAGER"  "$packager"
+-		format_entry "REPLACES"  "${_replaces[@]}"
+-		format_entry "CONFLICTS" "${_conflicts[@]}"
+-		format_entry "PROVIDES"  "${_provides[@]}"
+-
+-		format_entry "DEPENDS" "${_depends[@]}"
+-		format_entry "OPTDEPENDS" "${_optdepends[@]}"
+-		format_entry "MAKEDEPENDS" "${_makedepends[@]}"
+-		format_entry "CHECKDEPENDS" "${_checkdepends[@]}"
+-	} >'desc'
+-
+-	popd >/dev/null
+-	popd >/dev/null
+-
+-	# copy updated package entry into "files" database
+-	cp -a "$tmpdir/db/$pkgname-$pkgver" "$tmpdir/files/$pkgname-$pkgver"
+-
+-	# create files file
+-	msg2 "$(gettext "Creating '%s' db entry...")" 'files'
+-	local files_path="$tmpdir/files/$pkgname-$pkgver/files"
+-	echo "%FILES%" >"$files_path"
+-	bsdtar --exclude='^.*' -tf "$pkgfile" | LC_ALL=C sort -u >>"$files_path"
+-
+-	if (( RMEXISTING )); then
+-		msg2 "$(gettext "Removing old package file '%s'")" "$oldfilename"
+-		rm -f ${oldfile} ${oldfile}.sig
+-	fi
+-
+-	return 0
+-} # end db_write_entry
+-
+-# remove existing entries from the DB
+-#   arg1 - package name
+-db_remove_entry() {
+-	local pkgname=$1
+-	local notfound=1
+-	local pkgentry=$(find_pkgentry "$pkgname")
+-	while [[ -n $pkgentry ]]; do
+-		notfound=0
+-
+-		msg2 "$(gettext "Removing existing entry '%s'...")" \
+-		"${pkgentry##*/}"
+-		rm -rf "$pkgentry"
+-
+-		# remove entries in "files" database
+-		local filesentry=$(echo "$pkgentry" | sed 's/\(.*\)\/db\//\1\/files\//')
+-		rm -rf "$filesentry"
+-
+-		pkgentry=$(find_pkgentry "$pkgname")
+-	done
+-	return $notfound
+-} # end db_remove_entry
+-
+-elephant() {
+-	case $(( RANDOM % 2 )) in
+-		0) printf '%s\n' "H4sIAL3qBE4CAyWLwQ3AMAgD/0xh5UPzYiFUMgjq7LUJsk7yIQNAQTAikFUDnqkr" \
+-		                 "OQFOUm0Wd9pHCi13ONjBpVdqcWx+EdXVX4vXvGv5cgztB9+fJxZ7AAAA"
+-		;;
+-
+-		1) printf '%s\n' "H4sIAJVWBU4CA21RMQ7DIBDbeYWrDgQJ7rZ+IA/IB05l69alcx5fc0ASVXUk4jOO" \
+-		                 "7yAAUWtorygwJ4hlMii0YkJKKRKGvsMsiykl1SalvrMD1gUXyXRkGZPx5OPft81K" \
+-		                 "tNAiAjyGjYO47h1JjizPkJrCWbK/4C+uLkT7bzpGc7CT9bmOzNSW5WLSO5vexjmH" \
+-		                 "ZL9JFFZeAa0a2+lKjL2anpYfV+0Zx9LJ+/MC8nRayuDlSNy2rfAPibOzsiWHL0jL" \
+-		                 "SsjFAQAA"
+-		;;
+-	esac | base64 -d | gzip -d
+-}
+-
+-prepare_repo_db() {
+-	local repodir dbfile
+-
+-	# ensure the path to the DB exists; $LOCKFILE is always an absolute path
+-	repodir=${LOCKFILE%/*}/
+-
+-	if [[ ! -d $repodir ]]; then
+-		error "$(gettext "%s does not exist or is not a directory.")" "$repodir"
+-		exit 1
+-	fi
+-
+-	# check lock file
+-	if ( set -o noclobber; echo "$$" > "$LOCKFILE") 2> /dev/null; then
+-		CLEAN_LOCK=1
+-	else
+-		error "$(gettext "Failed to acquire lockfile: %s.")" "$LOCKFILE"
+-		[[ -f $LOCKFILE ]] && error "$(gettext "Held by process %s")" "$(cat "$LOCKFILE")"
+-		exit 1
+-	fi
+-
+-	for repo in "db" "files"; do
+-		dbfile=${repodir}/$REPO_DB_PREFIX.$repo.$REPO_DB_SUFFIX
+-
+-		if [[ -f $dbfile ]]; then
+-			# there are two situations we can have here:
+-			# a DB with some entries, or a DB with no contents at all.
+-			if ! bsdtar -tqf "$dbfile" '*/desc' >/dev/null 2>&1; then
+-				# check empty case
+-				if [[ -n $(bsdtar -tqf "$dbfile" '*' 2>/dev/null) ]]; then
+-					error "$(gettext "Repository file '%s' is not a proper pacman database.")" "$dbfile"
+-					exit 1
+-				fi
+-			fi
+-			verify_signature "$dbfile"
+-			msg "$(gettext "Extracting %s to a temporary location...")" "${dbfile##*/}"
+-			bsdtar -xf "$dbfile" -C "$tmpdir/$repo"
+-		else
+-			case $cmd in
+-				repo-remove)
+-					# only a missing "db" database is currently an error
+-					# TODO: remove if statement
+-					if [[ $repo == "db" ]]; then
+-						error "$(gettext "Repository file '%s' was not found.")" "$dbfile"
+-						exit 1
+-					fi
+-					;;
+-				repo-add)
+-					# check if the file can be created (write permission, directory existence, etc)
+-					if ! touch "$dbfile"; then
+-						error "$(gettext "Repository file '%s' could not be created.")" "$dbfile"
+-						exit 1
+-					fi
+-					rm -f "$dbfile"
+-					;;
+-			esac
+-		fi
+-	done
+-}
+-
+-add() {
+-	if [[ ! -f $1 ]]; then
+-		error "$(gettext "File '%s' not found.")" "$1"
+-		return 1
+-	fi
+-
+-	pkgfile=$1
+-	if ! bsdtar -tqf "$pkgfile" .PKGINFO >/dev/null 2>&1; then
+-		error "$(gettext "'%s' is not a package file, skipping")" "$pkgfile"
+-		return 1
+-	fi
+-
+-	msg "$(gettext "Adding package '%s'")" "$pkgfile"
+-
+-	db_write_entry "$pkgfile"
+-}
+-
+-remove() {
+-	pkgname=$1
+-	msg "$(gettext "Searching for package '%s'...")" "$pkgname"
+-
+-	if ! db_remove_entry "$pkgname"; then
+-		error "$(gettext "Package matching '%s' not found.")" "$pkgname"
+-		return 1
+-	fi
+-
+-	return 0
+-}
+-
+-rotate_db() {
+-	dirname=${LOCKFILE%/*}
+-
+-	pushd "$dirname" >/dev/null
+-
+-	for repo in "db" "files"; do
+-		filename=${REPO_DB_PREFIX}.${repo}.${REPO_DB_SUFFIX}
+-		tempname=$dirname/.tmp.$filename
+-
+-		# hardlink or move the previous version of the database and signature to .old
+-		# extension as a backup measure
+-		if [[ -f $filename ]]; then
+-			ln -f "$filename" "$filename.old" 2>/dev/null || \
+-				mv -f "$filename" "$filename.old"
+-
+-			if [[ -f $filename.sig ]]; then
+-				ln -f "$filename.sig" "$filename.old.sig" 2>/dev/null || \
+-					mv -f "$filename.sig" "$filename.old.sig"
+-			else
+-				rm -f "$filename.old.sig"
+-			fi
+-		fi
+-
+-		# rotate the newly-created database and signature into place
+-		mv "$tempname" "$filename"
+-		if [[ -f $tempname.sig ]]; then
+-			mv "$tempname.sig" "$filename.sig"
+-		fi
+-
+-		dblink=${filename%.tar*}
+-		rm -f "$dblink" "$dblink.sig"
+-		ln -s "$filename" "$dblink" 2>/dev/null || \
+-			ln "$filename" "$dblink" 2>/dev/null || \
+-			cp "$filename" "$dblink"
+-		if [[ -f "$filename.sig" ]]; then
+-			ln -s "$filename.sig" "$dblink.sig" 2>/dev/null || \
+-				ln "$filename.sig" "$dblink.sig" 2>/dev/null || \
+-				cp "$filename.sig" "$dblink.sig"
+-		fi
+-	done
+-
+-	popd >/dev/null
+-}
+-
+-create_db() {
+-	# $LOCKFILE is already guaranteed to be absolute so this is safe
+-	dirname=${LOCKFILE%/*}
+-
+-	for repo in "db" "files"; do
+-		filename=${REPO_DB_PREFIX}.${repo}.${REPO_DB_SUFFIX}
+-		# this ensures we create it on the same filesystem, making moves atomic
+-		tempname=$dirname/.tmp.$filename
+-
+-		pushd "$tmpdir/$repo" >/dev/null
+-		local files=(*)
+-		if [[ ${files[*]} = '*' ]]; then
+-			# we have no packages remaining? zip up some emptyness
+-			warning "$(gettext "No packages remain, creating empty database.")"
+-			files=(-T /dev/null)
+-		fi
+-		bsdtar -cf - "${files[@]}" | compress_as "$filename" > "$tempname"
+-		popd >/dev/null
+-
+-		create_signature "$tempname"
+-	done
+-}
+-
+-trap_exit() {
+-	# unhook all traps to avoid race conditions
+-	trap '' EXIT TERM HUP QUIT INT ERR
+-
+-	echo
+-	error "$@"
+-	clean_up 1
+-}
+-
+-clean_up() {
+-	local exit_code=${1:-$?}
+-
+-	# unhook all traps to avoid race conditions
+-	trap '' EXIT TERM HUP QUIT INT ERR
+-
+-	[[ -d $tmpdir ]] && rm -rf "$tmpdir"
+-	(( CLEAN_LOCK )) && [[ -f $LOCKFILE ]] && rm -f "$LOCKFILE"
+-
+-	exit $exit_code
+-}
+-
+-
+-# PROGRAM START
+-
+-# determine whether we have gettext; make it a no-op if we do not
+-if ! type gettext &>/dev/null; then
+-	gettext() {
+-		echo "$@"
+-	}
+-fi
+-
+-case $1 in
+-	-h|--help) usage; exit 0;;
+-	-V|--version) version; exit 0;;
+-esac
+-
+-# figure out what program we are
+-cmd=${0##*/}
+-if [[ $cmd == "repo-elephant" ]]; then
+-	elephant
+-	exit 0
+-fi
+-
+-if [[ $cmd != "repo-add" && $cmd != "repo-remove" ]]; then
+-	error "$(gettext "Invalid command name '%s' specified.")" "$cmd"
+-	exit 1
+-fi
+-
+-tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/repo-tools.XXXXXXXXXX") || (\
+-	error "$(gettext "Cannot create temp directory for database building.")"; \
+-	exit 1)
+-
+-for repo in "db" "files"; do
+-	mkdir "$tmpdir/$repo"
+-done
+-
+-trap 'clean_up' EXIT
+-for signal in TERM HUP QUIT; do
+-	trap "trap_exit \"$(gettext "%s signal caught. Exiting...")\" \"$signal\"" "$signal"
+-done
+-trap 'trap_exit "$(gettext "Aborted by user! Exiting...")"' INT
+-trap 'trap_exit "$(gettext "An unknown error has occurred. Exiting...")"' ERR
+-
+-declare -a args
+-# parse arguments
+-while (( $# )); do
+-	case $1 in
+-		-q|--quiet) QUIET=1;;
+-		-n|--new) ONLYADDNEW=1;;
+-		-R|--remove) RMEXISTING=1;;
+-		--nocolor) USE_COLOR='n';;
+-		-s|--sign)
+-			SIGN=1
+-			;;
+-		-k|--key)
+-			KEY=1
+-			shift
+-			GPGKEY=$1
+-			;;
+-		-v|--verify)
+-			VERIFY=1
+-			;;
+-		-p|--prevent-downgrade)
+-			PREVENT_DOWNGRADE=1
+-			;;
+-		*)
+-			args+=("$1")
+-			;;
+-	esac
+-	shift
+-done
+-
+-# check if messages are to be printed using color
+-if [[ -t 2 && $USE_COLOR != "n" ]]; then
+-	colorize
+-else
+-	unset ALL_OFF BOLD BLUE GREEN RED YELLOW
+-fi
+-
+-REPO_DB_FILE=${args[0]}
+-if [[ -z $REPO_DB_FILE ]]; then
+-	usage
+-	exit 1
+-fi
+-
+-if [[ $REPO_DB_FILE == /* ]]; then
+-	LOCKFILE=$REPO_DB_FILE.lck
+-else
+-	LOCKFILE=$PWD/$REPO_DB_FILE.lck
+-fi
+-
+-verify_repo_extension "$REPO_DB_FILE"
+-
+-REPO_DB_PREFIX=${REPO_DB_FILE##*/}
+-REPO_DB_PREFIX=${REPO_DB_PREFIX%.db.*}
+-REPO_DB_SUFFIX=${REPO_DB_FILE##*.db.}
+-
+-if (( SIGN || VERIFY )); then
+-	check_gpg
+-fi
+-
+-if (( VERIFY && ${#args[@]} == 1 )); then
+-	for repo in "db" "files"; do
+-		dbfile=${repodir}/$REPO_DB_PREFIX.$repo.$REPO_DB_SUFFIX
+-
+-		if [[ -f $dbfile ]]; then
+-			verify_signature "$dbfile"
+-		fi
+-	done
+-	exit 0
+-fi
+-
+-prepare_repo_db
+-
+-fail=0
+-for arg in "${args[@]:1}"; do
+-	case $cmd in
+-		repo-add) add "$arg" ;;
+-		repo-remove) remove "$arg" ;;
+-	esac || fail=1
+-done
+-
+-# if the whole operation was a success, re-zip and rotate databases
+-if (( !fail )); then
+-	msg "$(gettext "Creating updated database file '%s'")" "$REPO_DB_FILE"
+-	create_db
+-	rotate_db
+-else
+-	msg "$(gettext "No packages modified, nothing to do.")"
+-	exit 1
+-fi
+-
+-exit 0
+diff --git a/scripts/repo-add/.gitignore b/scripts/repo-add/.gitignore
+new file mode 100644
+index 00000000..d5b02e5c
+--- /dev/null
++++ b/scripts/repo-add/.gitignore
+@@ -0,0 +1,37 @@
++*.DS_Store
++*.dump
++.idea
++build
++target
++src/config.rs
++
++# Prerequisites
++*.d
++
++# Compiled Object files
++*.slo
++*.lo
++*.o
++*.obj
++
++# Precompiled Headers
++*.gch
++*.pch
++
++# Compiled Dynamic libraries
++*.so
++*.dylib
++
++# Fortran module files
++*.mod
++*.smod
++
++# Compiled Static libraries
++*.lai
++*.la
++*.a
++
++# Executables
++*.exe
++*.out
++*.app
+diff --git a/scripts/repo-add/Cargo.lock b/scripts/repo-add/Cargo.lock
+new file mode 100644
+index 00000000..ea4ed42b
+--- /dev/null
++++ b/scripts/repo-add/Cargo.lock
+@@ -0,0 +1,1093 @@
++# This file is automatically @generated by Cargo.
++# It is not intended for manual editing.
++version = 3
++
++[[package]]
++name = "aho-corasick"
++version = "0.7.20"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cc936419f96fa211c1b9166887b38e5e40b19958e5b895be7c1f93adec7071ac"
++dependencies = [
++ "memchr",
++]
++
++[[package]]
++name = "akv"
++version = "0.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b92d19b46248eb2cadc2c29f66632afb7af64f088bc7d5ae8c5ed8a779616c07"
++dependencies = [
++ "always-assert",
++ "libarchive_src",
++ "libc",
++]
++
++[[package]]
++name = "always-assert"
++version = "0.1.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "fbf688625d06217d5b1bb0ea9d9c44a1635fd0ee3534466388d18203174f4d11"
++
++[[package]]
++name = "android_system_properties"
++version = "0.1.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311"
++dependencies = [
++ "libc",
++]
++
++[[package]]
++name = "atty"
++version = "0.2.14"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d9b39be18770d11421cdb1b9947a45dd3f37e93092cbf377614828a319d5fee8"
++dependencies = [
++ "hermit-abi 0.1.19",
++ "libc",
++ "winapi",
++]
++
++[[package]]
++name = "autocfg"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
++
++[[package]]
++name = "bindgen"
++version = "0.63.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "36d860121800b2a9a94f9b5604b332d5cffb234ce17609ea479d723dbc9d3885"
++dependencies = [
++ "bitflags",
++ "cexpr",
++ "clang-sys",
++ "lazy_static",
++ "lazycell",
++ "log",
++ "peeking_take_while",
++ "proc-macro2",
++ "quote",
++ "regex",
++ "rustc-hash",
++ "shlex",
++ "syn",
++ "which",
++]
++
++[[package]]
++name = "bitflags"
++version = "1.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
++
++[[package]]
++name = "block"
++version = "0.1.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
++
++[[package]]
++name = "block-buffer"
++version = "0.10.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "69cce20737498f97b993470a6e536b8523f0af7892a4f928cceb1ac5e52ebe7e"
++dependencies = [
++ "generic-array",
++]
++
++[[package]]
++name = "bumpalo"
++version = "3.12.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0d261e256854913907f67ed06efbc3338dfe6179796deefc1ff763fc1aee5535"
++
++[[package]]
++name = "bzip2-sys"
++version = "0.1.11+1.0.8"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "736a955f3fa7875102d57c82b8cac37ec45224a07fd32d58f9f7a186b6cd4cdc"
++dependencies = [
++ "cc",
++ "libc",
++ "pkg-config",
++]
++
++[[package]]
++name = "cc"
++version = "1.0.79"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "50d30906286121d95be3d479533b458f87493b30a4b5f79a607db8f5d11aa91f"
++dependencies = [
++ "jobserver",
++]
++
++[[package]]
++name = "cexpr"
++version = "0.6.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
++dependencies = [
++ "nom",
++]
++
++[[package]]
++name = "cfg-if"
++version = "1.0.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
++
++[[package]]
++name = "chrono"
++version = "0.4.23"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "16b0a3d9ed01224b22057780a37bb8c5dbfe1be8ba48678e7bf57ec4b385411f"
++dependencies = [
++ "iana-time-zone",
++ "js-sys",
++ "num-integer",
++ "num-traits",
++ "time",
++ "wasm-bindgen",
++ "winapi",
++]
++
++[[package]]
++name = "clang-sys"
++version = "1.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "fa2e27ae6ab525c3d369ded447057bca5438d86dc3a68f6faafb8269ba82ebf3"
++dependencies = [
++ "glob",
++ "libc",
++ "libloading",
++]
++
++[[package]]
++name = "cmake"
++version = "0.1.49"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "db34956e100b30725f2eb215f90d4871051239535632f84fea3bc92722c66b7c"
++dependencies = [
++ "cc",
++]
++
++[[package]]
++name = "codespan-reporting"
++version = "0.11.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3538270d33cc669650c4b093848450d380def10c331d38c768e34cac80576e6e"
++dependencies = [
++ "termcolor",
++ "unicode-width",
++]
++
++[[package]]
++name = "colored"
++version = "1.9.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f4ffc801dacf156c5854b9df4f425a626539c3a6ef7893cc0c5084a23f0b6c59"
++dependencies = [
++ "atty",
++ "lazy_static",
++ "winapi",
++]
++
++[[package]]
++name = "core-foundation-sys"
++version = "0.8.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5827cebf4670468b8772dd191856768aedcb1b0278a04f989f7766351917b9dc"
++
++[[package]]
++name = "cpufeatures"
++version = "0.2.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "28d997bd5e24a5928dd43e46dc529867e207907fe0b239c3477d924f7f2ca320"
++dependencies = [
++ "libc",
++]
++
++[[package]]
++name = "crossbeam-channel"
++version = "0.5.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c2dd04ddaf88237dc3b8d8f9a3c1004b506b54b3313403944054d23c0870c521"
++dependencies = [
++ "cfg-if",
++ "crossbeam-utils",
++]
++
++[[package]]
++name = "crossbeam-deque"
++version = "0.8.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "715e8152b692bba2d374b53d4875445368fdf21a94751410af607a5ac677d1fc"
++dependencies = [
++ "cfg-if",
++ "crossbeam-epoch",
++ "crossbeam-utils",
++]
++
++[[package]]
++name = "crossbeam-epoch"
++version = "0.9.13"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "01a9af1f4c2ef74bb8aa1f7e19706bc72d03598c8a570bb5de72243c7a9d9d5a"
++dependencies = [
++ "autocfg",
++ "cfg-if",
++ "crossbeam-utils",
++ "memoffset",
++ "scopeguard",
++]
++
++[[package]]
++name = "crossbeam-utils"
++version = "0.8.14"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4fb766fa798726286dbbb842f174001dab8abc7b627a1dd86e0b7222a95d929f"
++dependencies = [
++ "cfg-if",
++]
++
++[[package]]
++name = "crypto-common"
++version = "0.1.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
++dependencies = [
++ "generic-array",
++ "typenum",
++]
++
++[[package]]
++name = "cxx"
++version = "1.0.90"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "90d59d9acd2a682b4e40605a242f6670eaa58c5957471cbf85e8aa6a0b97a5e8"
++dependencies = [
++ "cc",
++ "cxxbridge-flags",
++ "cxxbridge-macro",
++ "link-cplusplus",
++]
++
++[[package]]
++name = "cxx-build"
++version = "1.0.90"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ebfa40bda659dd5c864e65f4c9a2b0aff19bea56b017b9b77c73d3766a453a38"
++dependencies = [
++ "cc",
++ "codespan-reporting",
++ "once_cell",
++ "proc-macro2",
++ "quote",
++ "scratch",
++ "syn",
++]
++
++[[package]]
++name = "cxxbridge-flags"
++version = "1.0.90"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "457ce6757c5c70dc6ecdbda6925b958aae7f959bda7d8fb9bde889e34a09dc03"
++
++[[package]]
++name = "cxxbridge-macro"
++version = "1.0.90"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ebf883b7aacd7b2aeb2a7b338648ee19f57c140d4ee8e52c68979c6b2f7f2263"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn",
++]
++
++[[package]]
++name = "digest"
++version = "0.10.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8168378f4e5023e7218c89c891c0fd8ecdb5e5e4f18cb78f38cf245dd021e76f"
++dependencies = [
++ "block-buffer",
++ "crypto-common",
++]
++
++[[package]]
++name = "either"
++version = "1.8.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7fcaabb2fef8c910e7f4c7ce9f67a1283a1715879a7c230ca9d6d1ae31f16d91"
++
++[[package]]
++name = "fern"
++version = "0.6.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3bdd7b0849075e79ee9a1836df22c717d1eba30451796fdc631b04565dd11e2a"
++dependencies = [
++ "chrono",
++ "colored",
++ "log",
++]
++
++[[package]]
++name = "fs_extra"
++version = "1.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
++
++[[package]]
++name = "generic-array"
++version = "0.14.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bff49e947297f3312447abdca79f45f4738097cc82b06e72054d2223f601f1b9"
++dependencies = [
++ "typenum",
++ "version_check",
++]
++
++[[package]]
++name = "getrandom"
++version = "0.2.8"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c05aeb6a22b8f62540c194aac980f2115af067bfe15a0734d7277a768d396b31"
++dependencies = [
++ "cfg-if",
++ "libc",
++ "wasi 0.11.0+wasi-snapshot-preview1",
++]
++
++[[package]]
++name = "gettext-rs"
++version = "0.7.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e49ea8a8fad198aaa1f9655a2524b64b70eb06b2f3ff37da407566c93054f364"
++dependencies = [
++ "gettext-sys",
++ "locale_config",
++]
++
++[[package]]
++name = "gettext-sys"
++version = "0.21.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c63ce2e00f56a206778276704bbe38564c8695249fdc8f354b4ef71c57c3839d"
++dependencies = [
++ "cc",
++ "temp-dir",
++]
++
++[[package]]
++name = "glob"
++version = "0.3.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d2fabcfbdc87f4758337ca535fb41a6d701b65693ce38287d856d1674551ec9b"
++
++[[package]]
++name = "hermit-abi"
++version = "0.1.19"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "62b467343b94ba476dcb2500d242dadbb39557df889310ac77c5d99100aaac33"
++dependencies = [
++ "libc",
++]
++
++[[package]]
++name = "hermit-abi"
++version = "0.2.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ee512640fe35acbfb4bb779db6f0d80704c2cacfa2e39b601ef3e3f47d1ae4c7"
++dependencies = [
++ "libc",
++]
++
++[[package]]
++name = "iana-time-zone"
++version = "0.1.53"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "64c122667b287044802d6ce17ee2ddf13207ed924c712de9a66a5814d5b64765"
++dependencies = [
++ "android_system_properties",
++ "core-foundation-sys",
++ "iana-time-zone-haiku",
++ "js-sys",
++ "wasm-bindgen",
++ "winapi",
++]
++
++[[package]]
++name = "iana-time-zone-haiku"
++version = "0.1.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0703ae284fc167426161c2e3f1da3ea71d94b21bedbcc9494e92b28e334e3dca"
++dependencies = [
++ "cxx",
++ "cxx-build",
++]
++
++[[package]]
++name = "jobserver"
++version = "0.1.25"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "068b1ee6743e4d11fb9c6a1e6064b3693a1b600e7f5f5988047d98b3dc9fb90b"
++dependencies = [
++ "libc",
++]
++
++[[package]]
++name = "js-sys"
++version = "0.3.61"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "445dde2150c55e483f3d8416706b97ec8e8237c307e5b7b4b8dd15e6af2a0730"
++dependencies = [
++ "wasm-bindgen",
++]
++
++[[package]]
++name = "lazy_static"
++version = "1.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
++
++[[package]]
++name = "lazycell"
++version = "1.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
++
++[[package]]
++name = "libarchive_src"
++version = "0.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "32c1c2b16e9d5bf54b752e98b3c6d014e0a79cdaff464cd6b0b35e74a0c20516"
++dependencies = [
++ "bindgen",
++ "bzip2-sys",
++ "cmake",
++ "libc",
++ "libz-sys",
++ "lz4-sys",
++ "lzma-sys",
++ "openssl-sys",
++ "path-slash",
++ "zstd-sys",
++]
++
++[[package]]
++name = "libc"
++version = "0.2.139"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "201de327520df007757c1f0adce6e827fe8562fbc28bfd9c15571c66ca1f5f79"
++
++[[package]]
++name = "libloading"
++version = "0.7.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b67380fd3b2fbe7527a606e18729d21c6f3951633d0500574c4dc22d2d638b9f"
++dependencies = [
++ "cfg-if",
++ "winapi",
++]
++
++[[package]]
++name = "libz-sys"
++version = "1.1.8"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9702761c3935f8cc2f101793272e202c72b99da8f4224a19ddcf1279a6450bbf"
++dependencies = [
++ "cc",
++ "libc",
++ "pkg-config",
++ "vcpkg",
++]
++
++[[package]]
++name = "link-cplusplus"
++version = "1.0.8"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ecd207c9c713c34f95a097a5b029ac2ce6010530c7b49d7fea24d977dede04f5"
++dependencies = [
++ "cc",
++]
++
++[[package]]
++name = "locale_config"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "08d2c35b16f4483f6c26f0e4e9550717a2f6575bcd6f12a53ff0c490a94a6934"
++dependencies = [
++ "lazy_static",
++ "objc",
++ "objc-foundation",
++ "regex",
++ "winapi",
++]
++
++[[package]]
++name = "log"
++version = "0.4.17"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "abb12e687cfb44aa40f41fc3978ef76448f9b6038cad6aef4259d3c095a2382e"
++dependencies = [
++ "cfg-if",
++]
++
++[[package]]
++name = "lz4-sys"
++version = "1.9.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "57d27b317e207b10f69f5e75494119e391a96f48861ae870d1da6edac98ca900"
++dependencies = [
++ "cc",
++ "libc",
++]
++
++[[package]]
++name = "lzma-sys"
++version = "0.1.20"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27"
++dependencies = [
++ "cc",
++ "libc",
++ "pkg-config",
++]
++
++[[package]]
++name = "malloc_buf"
++version = "0.0.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
++dependencies = [
++ "libc",
++]
++
++[[package]]
++name = "md-5"
++version = "0.10.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6365506850d44bff6e2fbcb5176cf63650e48bd45ef2fe2665ae1570e0f4b9ca"
++dependencies = [
++ "digest",
++]
++
++[[package]]
++name = "memchr"
++version = "2.5.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
++
++[[package]]
++name = "memoffset"
++version = "0.7.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5de893c32cde5f383baa4c04c5d6dbdd735cfd4a794b0debdb2bb1b421da5ff4"
++dependencies = [
++ "autocfg",
++]
++
++[[package]]
++name = "minimal-lexical"
++version = "0.2.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
++
++[[package]]
++name = "nom"
++version = "7.1.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
++dependencies = [
++ "memchr",
++ "minimal-lexical",
++]
++
++[[package]]
++name = "num-integer"
++version = "0.1.45"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "225d3389fb3509a24c93f5c29eb6bde2586b98d9f016636dff58d7c6f7569cd9"
++dependencies = [
++ "autocfg",
++ "num-traits",
++]
++
++[[package]]
++name = "num-traits"
++version = "0.2.15"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "578ede34cf02f8924ab9447f50c28075b4d3e5b269972345e7e0372b38c6cdcd"
++dependencies = [
++ "autocfg",
++]
++
++[[package]]
++name = "num_cpus"
++version = "1.15.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0fac9e2da13b5eb447a6ce3d392f23a29d8694bff781bf03a16cd9ac8697593b"
++dependencies = [
++ "hermit-abi 0.2.6",
++ "libc",
++]
++
++[[package]]
++name = "objc"
++version = "0.2.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "915b1b472bc21c53464d6c8461c9d3af805ba1ef837e1cac254428f4a77177b1"
++dependencies = [
++ "malloc_buf",
++]
++
++[[package]]
++name = "objc-foundation"
++version = "0.1.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1add1b659e36c9607c7aab864a76c7a4c2760cd0cd2e120f3fb8b952c7e22bf9"
++dependencies = [
++ "block",
++ "objc",
++ "objc_id",
++]
++
++[[package]]
++name = "objc_id"
++version = "0.1.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c92d4ddb4bd7b50d730c215ff871754d0da6b2178849f8a2a2ab69712d0c073b"
++dependencies = [
++ "objc",
++]
++
++[[package]]
++name = "once_cell"
++version = "1.17.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6f61fba1741ea2b3d6a1e3178721804bb716a68a6aeba1149b5d52e3d464ea66"
++
++[[package]]
++name = "openssl-src"
++version = "111.25.0+1.1.1t"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3173cd3626c43e3854b1b727422a276e568d9ec5fe8cec197822cf52cfb743d6"
++dependencies = [
++ "cc",
++]
++
++[[package]]
++name = "openssl-sys"
++version = "0.9.80"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "23bbbf7854cd45b83958ebe919f0e8e516793727652e27fda10a8384cfc790b7"
++dependencies = [
++ "autocfg",
++ "cc",
++ "libc",
++ "openssl-src",
++ "pkg-config",
++ "vcpkg",
++]
++
++[[package]]
++name = "path-absolutize"
++version = "3.0.14"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0f1d4993b16f7325d90c18c3c6a3327db7808752db8d208cea0acee0abd52c52"
++dependencies = [
++ "path-dedot",
++]
++
++[[package]]
++name = "path-dedot"
++version = "3.0.18"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9a81540d94551664b72b72829b12bd167c73c9d25fbac0e04fafa8023f7e4901"
++dependencies = [
++ "once_cell",
++]
++
++[[package]]
++name = "path-slash"
++version = "0.2.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1e91099d4268b0e11973f036e885d652fb0b21fedcf69738c627f94db6a44f42"
++
++[[package]]
++name = "peeking_take_while"
++version = "0.1.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "19b17cddbe7ec3f8bc800887bab5e717348c95ea2ca0b1bf0837fb964dc67099"
++
++[[package]]
++name = "pkg-config"
++version = "0.3.26"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6ac9a59f73473f1b8d852421e59e64809f025994837ef743615c6d0c5b305160"
++
++[[package]]
++name = "ppv-lite86"
++version = "0.2.17"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5b40af805b3121feab8a3c29f04d8ad262fa8e0561883e7653e024ae4479e6de"
++
++[[package]]
++name = "proc-macro2"
++version = "1.0.51"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5d727cae5b39d21da60fa540906919ad737832fe0b1c165da3a34d6548c849d6"
++dependencies = [
++ "unicode-ident",
++]
++
++[[package]]
++name = "quote"
++version = "1.0.23"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8856d8364d252a14d474036ea1358d63c9e6965c8e5c1885c18f73d70bff9c7b"
++dependencies = [
++ "proc-macro2",
++]
++
++[[package]]
++name = "rand"
++version = "0.8.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
++dependencies = [
++ "libc",
++ "rand_chacha",
++ "rand_core",
++]
++
++[[package]]
++name = "rand_chacha"
++version = "0.3.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
++dependencies = [
++ "ppv-lite86",
++ "rand_core",
++]
++
++[[package]]
++name = "rand_core"
++version = "0.6.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
++dependencies = [
++ "getrandom",
++]
++
++[[package]]
++name = "rayon"
++version = "1.6.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6db3a213adf02b3bcfd2d3846bb41cb22857d131789e01df434fb7e7bc0759b7"
++dependencies = [
++ "either",
++ "rayon-core",
++]
++
++[[package]]
++name = "rayon-core"
++version = "1.10.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "356a0625f1954f730c0201cdab48611198dc6ce21f4acff55089b5a78e6e835b"
++dependencies = [
++ "crossbeam-channel",
++ "crossbeam-deque",
++ "crossbeam-utils",
++ "num_cpus",
++]
++
++[[package]]
++name = "regex"
++version = "1.7.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "48aaa5748ba571fb95cd2c85c09f629215d3a6ece942baa100950af03a34f733"
++dependencies = [
++ "aho-corasick",
++ "memchr",
++ "regex-syntax",
++]
++
++[[package]]
++name = "regex-syntax"
++version = "0.6.28"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "456c603be3e8d448b072f410900c09faf164fbce2d480456f50eea6e25f9c848"
++
++[[package]]
++name = "repo-add"
++version = "0.0.1"
++dependencies = [
++ "akv",
++ "chrono",
++ "fern",
++ "fs_extra",
++ "gettext-rs",
++ "lazy_static",
++ "log",
++ "md-5",
++ "once_cell",
++ "path-absolutize",
++ "rand",
++ "rayon",
++ "sha2",
++ "signal-hook",
++ "subprocess",
++]
++
++[[package]]
++name = "rustc-hash"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
++
++[[package]]
++name = "scopeguard"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
++
++[[package]]
++name = "scratch"
++version = "1.0.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ddccb15bcce173023b3fedd9436f882a0739b8dfb45e4f6b6002bee5929f61b2"
++
++[[package]]
++name = "sha2"
++version = "0.10.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "82e6b795fe2e3b1e845bafcb27aa35405c4d47cdfc92af5fc8d3002f76cebdc0"
++dependencies = [
++ "cfg-if",
++ "cpufeatures",
++ "digest",
++]
++
++[[package]]
++name = "shlex"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "43b2853a4d09f215c24cc5489c992ce46052d359b5109343cbafbf26bc62f8a3"
++
++[[package]]
++name = "signal-hook"
++version = "0.3.15"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "732768f1176d21d09e076c23a93123d40bba92d50c4058da34d45c8de8e682b9"
++dependencies = [
++ "libc",
++ "signal-hook-registry",
++]
++
++[[package]]
++name = "signal-hook-registry"
++version = "1.4.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d8229b473baa5980ac72ef434c4415e70c4b5e71b423043adb4ba059f89c99a1"
++dependencies = [
++ "libc",
++]
++
++[[package]]
++name = "subprocess"
++version = "0.2.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0c2e86926081dda636c546d8c5e641661049d7562a68f5488be4a1f7f66f6086"
++dependencies = [
++ "libc",
++ "winapi",
++]
++
++[[package]]
++name = "syn"
++version = "1.0.107"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1f4064b5b16e03ae50984a5a8ed5d4f8803e6bc1fd170a3cda91a1be4b18e3f5"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "unicode-ident",
++]
++
++[[package]]
++name = "temp-dir"
++version = "0.1.11"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "af547b166dd1ea4b472165569fc456cfb6818116f854690b0ff205e636523dab"
++
++[[package]]
++name = "termcolor"
++version = "1.2.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "be55cf8942feac5c765c2c993422806843c9a9a45d4d5c407ad6dd2ea95eb9b6"
++dependencies = [
++ "winapi-util",
++]
++
++[[package]]
++name = "time"
++version = "0.1.45"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1b797afad3f312d1c66a56d11d0316f916356d11bd158fbc6ca6389ff6bf805a"
++dependencies = [
++ "libc",
++ "wasi 0.10.0+wasi-snapshot-preview1",
++ "winapi",
++]
++
++[[package]]
++name = "typenum"
++version = "1.16.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "497961ef93d974e23eb6f433eb5fe1b7930b659f06d12dec6fc44a8f554c0bba"
++
++[[package]]
++name = "unicode-ident"
++version = "1.0.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "84a22b9f218b40614adcb3f4ff08b703773ad44fa9423e4e0d346d5db86e4ebc"
++
++[[package]]
++name = "unicode-width"
++version = "0.1.10"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c0edd1e5b14653f783770bce4a4dabb4a5108a5370a5f5d8cfe8710c361f6c8b"
++
++[[package]]
++name = "vcpkg"
++version = "0.2.15"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
++
++[[package]]
++name = "version_check"
++version = "0.9.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
++
++[[package]]
++name = "wasi"
++version = "0.10.0+wasi-snapshot-preview1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1a143597ca7c7793eff794def352d41792a93c481eb1042423ff7ff72ba2c31f"
++
++[[package]]
++name = "wasi"
++version = "0.11.0+wasi-snapshot-preview1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
++
++[[package]]
++name = "wasm-bindgen"
++version = "0.2.84"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "31f8dcbc21f30d9b8f2ea926ecb58f6b91192c17e9d33594b3df58b2007ca53b"
++dependencies = [
++ "cfg-if",
++ "wasm-bindgen-macro",
++]
++
++[[package]]
++name = "wasm-bindgen-backend"
++version = "0.2.84"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "95ce90fd5bcc06af55a641a86428ee4229e44e07033963a2290a8e241607ccb9"
++dependencies = [
++ "bumpalo",
++ "log",
++ "once_cell",
++ "proc-macro2",
++ "quote",
++ "syn",
++ "wasm-bindgen-shared",
++]
++
++[[package]]
++name = "wasm-bindgen-macro"
++version = "0.2.84"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4c21f77c0bedc37fd5dc21f897894a5ca01e7bb159884559461862ae90c0b4c5"
++dependencies = [
++ "quote",
++ "wasm-bindgen-macro-support",
++]
++
++[[package]]
++name = "wasm-bindgen-macro-support"
++version = "0.2.84"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2aff81306fcac3c7515ad4e177f521b5c9a15f2b08f4e32d823066102f35a5f6"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn",
++ "wasm-bindgen-backend",
++ "wasm-bindgen-shared",
++]
++
++[[package]]
++name = "wasm-bindgen-shared"
++version = "0.2.84"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0046fef7e28c3804e5e38bfa31ea2a0f73905319b677e57ebe37e49358989b5d"
++
++[[package]]
++name = "which"
++version = "4.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2441c784c52b289a054b7201fc93253e288f094e2f4be9058343127c4226a269"
++dependencies = [
++ "either",
++ "libc",
++ "once_cell",
++]
++
++[[package]]
++name = "winapi"
++version = "0.3.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
++dependencies = [
++ "winapi-i686-pc-windows-gnu",
++ "winapi-x86_64-pc-windows-gnu",
++]
++
++[[package]]
++name = "winapi-i686-pc-windows-gnu"
++version = "0.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
++
++[[package]]
++name = "winapi-util"
++version = "0.1.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "70ec6ce85bb158151cae5e5c87f95a8e97d2c0c4b001223f33a334e3ce5de178"
++dependencies = [
++ "winapi",
++]
++
++[[package]]
++name = "winapi-x86_64-pc-windows-gnu"
++version = "0.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
++
++[[package]]
++name = "zstd-sys"
++version = "2.0.7+zstd.1.5.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "94509c3ba2fe55294d752b79842c530ccfab760192521df74a081a78d2b3c7f5"
++dependencies = [
++ "cc",
++ "libc",
++ "pkg-config",
++]
+diff --git a/scripts/repo-add/Cargo.toml b/scripts/repo-add/Cargo.toml
+new file mode 100644
+index 00000000..ede65beb
+--- /dev/null
++++ b/scripts/repo-add/Cargo.toml
+@@ -0,0 +1,34 @@
++[package]
++name = "repo-add"
++version = "0.0.1"
++authors = ["Vladislav Nepogodin <nepogodin.vlad@gmail.com>"]
++license = "GPLv3"
++edition = "2021"
++
++[dependencies]
++log = "0.4"
++subprocess = "0.2.9"
++once_cell = "1.17.0"
++lazy_static = "1.4.0"
++gettext-rs = { version = "0.7", features = ["gettext-system"] }
++#async_zip = { version = "0.0.11", features = ["full"] }
++#tokio = { version = "1.25.0", features = ["full"] }
++akv = "0.1.0"
++fern = { version = "0.6.1", features = ["colored", "chrono"] }
++chrono = "0.4.23"
++rand = "0.8.5"
++path-absolutize = "3.0.14"
++rayon = "1.6.1"
++md-5 = "0.10.5"
++sha2 = "0.10.6"
++fs_extra = "1.3.0"
++signal-hook = "0.3.15"
++#tar = "0.4.38"
++#clap = { version = "4.1.4", features = ["derive"] }
++
++[profile.release]
++strip = "symbols"
++panic = "abort"
++lto = true
++opt-level = 3
++codegen-units = 1
+diff --git a/scripts/repo-add/LICENSE b/scripts/repo-add/LICENSE
+new file mode 100644
+index 00000000..ebd853e8
+--- /dev/null
++++ b/scripts/repo-add/LICENSE
+@@ -0,0 +1,674 @@
++GNU GENERAL PUBLIC LICENSE
++   Version 3, 29 June 2007
++
++Copyright (C) 2007 Free Software Foundation, Inc. <http://fsf.org/>
++Everyone is permitted to copy and distribute verbatim copies
++of this license document, but changing it is not allowed.
++
++        Preamble
++
++The GNU General Public License is a free, copyleft license for
++software and other kinds of works.
++
++The licenses for most software and other practical works are designed
++to take away your freedom to share and change the works.  By contrast,
++the GNU General Public License is intended to guarantee your freedom to
++share and change all versions of a program--to make sure it remains free
++software for all its users.  We, the Free Software Foundation, use the
++GNU General Public License for most of our software; it applies also to
++any other work released this way by its authors.  You can apply it to
++your programs, too.
++
++When we speak of free software, we are referring to freedom, not
++price.  Our General Public Licenses are designed to make sure that you
++have the freedom to distribute copies of free software (and charge for
++them if you wish), that you receive source code or can get it if you
++want it, that you can change the software or use pieces of it in new
++free programs, and that you know you can do these things.
++
++To protect your rights, we need to prevent others from denying you
++these rights or asking you to surrender the rights.  Therefore, you have
++certain responsibilities if you distribute copies of the software, or if
++you modify it: responsibilities to respect the freedom of others.
++
++For example, if you distribute copies of such a program, whether
++gratis or for a fee, you must pass on to the recipients the same
++freedoms that you received.  You must make sure that they, too, receive
++or can get the source code.  And you must show them these terms so they
++know their rights.
++
++Developers that use the GNU GPL protect your rights with two steps:
++(1) assert copyright on the software, and (2) offer you this License
++giving you legal permission to copy, distribute and/or modify it.
++
++For the developers' and authors' protection, the GPL clearly explains
++that there is no warranty for this free software.  For both users' and
++authors' sake, the GPL requires that modified versions be marked as
++changed, so that their problems will not be attributed erroneously to
++authors of previous versions.
++
++Some devices are designed to deny users access to install or run
++modified versions of the software inside them, although the manufacturer
++can do so.  This is fundamentally incompatible with the aim of
++protecting users' freedom to change the software.  The systematic
++pattern of such abuse occurs in the area of products for individuals to
++use, which is precisely where it is most unacceptable.  Therefore, we
++have designed this version of the GPL to prohibit the practice for those
++products.  If such problems arise substantially in other domains, we
++stand ready to extend this provision to those domains in future versions
++of the GPL, as needed to protect the freedom of users.
++
++Finally, every program is threatened constantly by software patents.
++States should not allow patents to restrict development and use of
++software on general-purpose computers, but in those that do, we wish to
++avoid the special danger that patents applied to a free program could
++make it effectively proprietary.  To prevent this, the GPL assures that
++patents cannot be used to render the program non-free.
++
++The precise terms and conditions for copying, distribution and
++modification follow.
++
++   TERMS AND CONDITIONS
++
++0. Definitions.
++
++"This License" refers to version 3 of the GNU General Public License.
++
++"Copyright" also means copyright-like laws that apply to other kinds of
++works, such as semiconductor masks.
++
++"The Program" refers to any copyrightable work licensed under this
++License.  Each licensee is addressed as "you".  "Licensees" and
++"recipients" may be individuals or organizations.
++
++To "modify" a work means to copy from or adapt all or part of the work
++in a fashion requiring copyright permission, other than the making of an
++exact copy.  The resulting work is called a "modified version" of the
++earlier work or a work "based on" the earlier work.
++
++A "covered work" means either the unmodified Program or a work based
++on the Program.
++
++To "propagate" a work means to do anything with it that, without
++permission, would make you directly or secondarily liable for
++infringement under applicable copyright law, except executing it on a
++computer or modifying a private copy.  Propagation includes copying,
++distribution (with or without modification), making available to the
++public, and in some countries other activities as well.
++
++To "convey" a work means any kind of propagation that enables other
++parties to make or receive copies.  Mere interaction with a user through
++a computer network, with no transfer of a copy, is not conveying.
++
++An interactive user interface displays "Appropriate Legal Notices"
++to the extent that it includes a convenient and prominently visible
++feature that (1) displays an appropriate copyright notice, and (2)
++tells the user that there is no warranty for the work (except to the
++extent that warranties are provided), that licensees may convey the
++work under this License, and how to view a copy of this License.  If
++the interface presents a list of user commands or options, such as a
++menu, a prominent item in the list meets this criterion.
++
++1. Source Code.
++
++The "source code" for a work means the preferred form of the work
++for making modifications to it.  "Object code" means any non-source
++form of a work.
++
++A "Standard Interface" means an interface that either is an official
++standard defined by a recognized standards body, or, in the case of
++interfaces specified for a particular programming language, one that
++is widely used among developers working in that language.
++
++The "System Libraries" of an executable work include anything, other
++than the work as a whole, that (a) is included in the normal form of
++packaging a Major Component, but which is not part of that Major
++Component, and (b) serves only to enable use of the work with that
++Major Component, or to implement a Standard Interface for which an
++implementation is available to the public in source code form.  A
++"Major Component", in this context, means a major essential component
++(kernel, window system, and so on) of the specific operating system
++(if any) on which the executable work runs, or a compiler used to
++produce the work, or an object code interpreter used to run it.
++
++The "Corresponding Source" for a work in object code form means all
++the source code needed to generate, install, and (for an executable
++work) run the object code and to modify the work, including scripts to
++control those activities.  However, it does not include the work's
++System Libraries, or general-purpose tools or generally available free
++programs which are used unmodified in performing those activities but
++which are not part of the work.  For example, Corresponding Source
++includes interface definition files associated with source files for
++the work, and the source code for shared libraries and dynamically
++linked subprograms that the work is specifically designed to require,
++such as by intimate data communication or control flow between those
++subprograms and other parts of the work.
++
++The Corresponding Source need not include anything that users
++can regenerate automatically from other parts of the Corresponding
++Source.
++
++The Corresponding Source for a work in source code form is that
++same work.
++
++2. Basic Permissions.
++
++All rights granted under this License are granted for the term of
++copyright on the Program, and are irrevocable provided the stated
++conditions are met.  This License explicitly affirms your unlimited
++permission to run the unmodified Program.  The output from running a
++covered work is covered by this License only if the output, given its
++content, constitutes a covered work.  This License acknowledges your
++rights of fair use or other equivalent, as provided by copyright law.
++
++You may make, run and propagate covered works that you do not
++convey, without conditions so long as your license otherwise remains
++in force.  You may convey covered works to others for the sole purpose
++of having them make modifications exclusively for you, or provide you
++with facilities for running those works, provided that you comply with
++the terms of this License in conveying all material for which you do
++not control copyright.  Those thus making or running the covered works
++for you must do so exclusively on your behalf, under your direction
++and control, on terms that prohibit them from making any copies of
++your copyrighted material outside their relationship with you.
++
++Conveying under any other circumstances is permitted solely under
++the conditions stated below.  Sublicensing is not allowed; section 10
++makes it unnecessary.
++
++3. Protecting Users' Legal Rights From Anti-Circumvention Law.
++
++No covered work shall be deemed part of an effective technological
++measure under any applicable law fulfilling obligations under article
++11 of the WIPO copyright treaty adopted on 20 December 1996, or
++similar laws prohibiting or restricting circumvention of such
++measures.
++
++When you convey a covered work, you waive any legal power to forbid
++circumvention of technological measures to the extent such circumvention
++is effected by exercising rights under this License with respect to
++the covered work, and you disclaim any intention to limit operation or
++modification of the work as a means of enforcing, against the work's
++users, your or third parties' legal rights to forbid circumvention of
++technological measures.
++
++4. Conveying Verbatim Copies.
++
++You may convey verbatim copies of the Program's source code as you
++receive it, in any medium, provided that you conspicuously and
++appropriately publish on each copy an appropriate copyright notice;
++keep intact all notices stating that this License and any
++non-permissive terms added in accord with section 7 apply to the code;
++keep intact all notices of the absence of any warranty; and give all
++recipients a copy of this License along with the Program.
++
++You may charge any price or no price for each copy that you convey,
++and you may offer support or warranty protection for a fee.
++
++5. Conveying Modified Source Versions.
++
++You may convey a work based on the Program, or the modifications to
++produce it from the Program, in the form of source code under the
++terms of section 4, provided that you also meet all of these conditions:
++
++a) The work must carry prominent notices stating that you modified
++it, and giving a relevant date.
++
++b) The work must carry prominent notices stating that it is
++released under this License and any conditions added under section
++7.  This requirement modifies the requirement in section 4 to
++"keep intact all notices".
++
++c) You must license the entire work, as a whole, under this
++License to anyone who comes into possession of a copy.  This
++License will therefore apply, along with any applicable section 7
++additional terms, to the whole of the work, and all its parts,
++regardless of how they are packaged.  This License gives no
++permission to license the work in any other way, but it does not
++invalidate such permission if you have separately received it.
++
++d) If the work has interactive user interfaces, each must display
++Appropriate Legal Notices; however, if the Program has interactive
++interfaces that do not display Appropriate Legal Notices, your
++work need not make them do so.
++
++A compilation of a covered work with other separate and independent
++works, which are not by their nature extensions of the covered work,
++and which are not combined with it such as to form a larger program,
++in or on a volume of a storage or distribution medium, is called an
++"aggregate" if the compilation and its resulting copyright are not
++used to limit the access or legal rights of the compilation's users
++beyond what the individual works permit.  Inclusion of a covered work
++in an aggregate does not cause this License to apply to the other
++parts of the aggregate.
++
++6. Conveying Non-Source Forms.
++
++You may convey a covered work in object code form under the terms
++of sections 4 and 5, provided that you also convey the
++machine-readable Corresponding Source under the terms of this License,
++in one of these ways:
++
++a) Convey the object code in, or embodied in, a physical product
++(including a physical distribution medium), accompanied by the
++Corresponding Source fixed on a durable physical medium
++customarily used for software interchange.
++
++b) Convey the object code in, or embodied in, a physical product
++(including a physical distribution medium), accompanied by a
++written offer, valid for at least three years and valid for as
++long as you offer spare parts or customer support for that product
++model, to give anyone who possesses the object code either (1) a
++copy of the Corresponding Source for all the software in the
++product that is covered by this License, on a durable physical
++medium customarily used for software interchange, for a price no
++more than your reasonable cost of physically performing this
++conveying of source, or (2) access to copy the
++Corresponding Source from a network server at no charge.
++
++c) Convey individual copies of the object code with a copy of the
++written offer to provide the Corresponding Source.  This
++alternative is allowed only occasionally and noncommercially, and
++only if you received the object code with such an offer, in accord
++with subsection 6b.
++
++d) Convey the object code by offering access from a designated
++place (gratis or for a charge), and offer equivalent access to the
++Corresponding Source in the same way through the same place at no
++further charge.  You need not require recipients to copy the
++Corresponding Source along with the object code.  If the place to
++copy the object code is a network server, the Corresponding Source
++may be on a different server (operated by you or a third party)
++that supports equivalent copying facilities, provided you maintain
++clear directions next to the object code saying where to find the
++Corresponding Source.  Regardless of what server hosts the
++Corresponding Source, you remain obligated to ensure that it is
++available for as long as needed to satisfy these requirements.
++
++e) Convey the object code using peer-to-peer transmission, provided
++you inform other peers where the object code and Corresponding
++Source of the work are being offered to the general public at no
++charge under subsection 6d.
++
++A separable portion of the object code, whose source code is excluded
++from the Corresponding Source as a System Library, need not be
++included in conveying the object code work.
++
++A "User Product" is either (1) a "consumer product", which means any
++tangible personal property which is normally used for personal, family,
++or household purposes, or (2) anything designed or sold for incorporation
++into a dwelling.  In determining whether a product is a consumer product,
++doubtful cases shall be resolved in favor of coverage.  For a particular
++product received by a particular user, "normally used" refers to a
++typical or common use of that class of product, regardless of the status
++of the particular user or of the way in which the particular user
++actually uses, or expects or is expected to use, the product.  A product
++is a consumer product regardless of whether the product has substantial
++commercial, industrial or non-consumer uses, unless such uses represent
++the only significant mode of use of the product.
++
++"Installation Information" for a User Product means any methods,
++procedures, authorization keys, or other information required to install
++and execute modified versions of a covered work in that User Product from
++a modified version of its Corresponding Source.  The information must
++suffice to ensure that the continued functioning of the modified object
++code is in no case prevented or interfered with solely because
++modification has been made.
++
++If you convey an object code work under this section in, or with, or
++specifically for use in, a User Product, and the conveying occurs as
++part of a transaction in which the right of possession and use of the
++User Product is transferred to the recipient in perpetuity or for a
++fixed term (regardless of how the transaction is characterized), the
++Corresponding Source conveyed under this section must be accompanied
++by the Installation Information.  But this requirement does not apply
++if neither you nor any third party retains the ability to install
++modified object code on the User Product (for example, the work has
++been installed in ROM).
++
++The requirement to provide Installation Information does not include a
++requirement to continue to provide support service, warranty, or updates
++for a work that has been modified or installed by the recipient, or for
++the User Product in which it has been modified or installed.  Access to a
++network may be denied when the modification itself materially and
++adversely affects the operation of the network or violates the rules and
++protocols for communication across the network.
++
++Corresponding Source conveyed, and Installation Information provided,
++in accord with this section must be in a format that is publicly
++documented (and with an implementation available to the public in
++source code form), and must require no special password or key for
++unpacking, reading or copying.
++
++7. Additional Terms.
++
++"Additional permissions" are terms that supplement the terms of this
++License by making exceptions from one or more of its conditions.
++Additional permissions that are applicable to the entire Program shall
++be treated as though they were included in this License, to the extent
++that they are valid under applicable law.  If additional permissions
++apply only to part of the Program, that part may be used separately
++under those permissions, but the entire Program remains governed by
++this License without regard to the additional permissions.
++
++When you convey a copy of a covered work, you may at your option
++remove any additional permissions from that copy, or from any part of
++it.  (Additional permissions may be written to require their own
++removal in certain cases when you modify the work.)  You may place
++additional permissions on material, added by you to a covered work,
++for which you have or can give appropriate copyright permission.
++
++Notwithstanding any other provision of this License, for material you
++add to a covered work, you may (if authorized by the copyright holders of
++that material) supplement the terms of this License with terms:
++
++a) Disclaiming warranty or limiting liability differently from the
++terms of sections 15 and 16 of this License; or
++
++b) Requiring preservation of specified reasonable legal notices or
++author attributions in that material or in the Appropriate Legal
++Notices displayed by works containing it; or
++
++c) Prohibiting misrepresentation of the origin of that material, or
++requiring that modified versions of such material be marked in
++reasonable ways as different from the original version; or
++
++d) Limiting the use for publicity purposes of names of licensors or
++authors of the material; or
++
++e) Declining to grant rights under trademark law for use of some
++trade names, trademarks, or service marks; or
++
++f) Requiring indemnification of licensors and authors of that
++material by anyone who conveys the material (or modified versions of
++it) with contractual assumptions of liability to the recipient, for
++any liability that these contractual assumptions directly impose on
++those licensors and authors.
++
++All other non-permissive additional terms are considered "further
++restrictions" within the meaning of section 10.  If the Program as you
++received it, or any part of it, contains a notice stating that it is
++governed by this License along with a term that is a further
++restriction, you may remove that term.  If a license document contains
++a further restriction but permits relicensing or conveying under this
++License, you may add to a covered work material governed by the terms
++of that license document, provided that the further restriction does
++not survive such relicensing or conveying.
++
++If you add terms to a covered work in accord with this section, you
++must place, in the relevant source files, a statement of the
++additional terms that apply to those files, or a notice indicating
++where to find the applicable terms.
++
++Additional terms, permissive or non-permissive, may be stated in the
++form of a separately written license, or stated as exceptions;
++the above requirements apply either way.
++
++8. Termination.
++
++You may not propagate or modify a covered work except as expressly
++provided under this License.  Any attempt otherwise to propagate or
++modify it is void, and will automatically terminate your rights under
++this License (including any patent licenses granted under the third
++paragraph of section 11).
++
++However, if you cease all violation of this License, then your
++license from a particular copyright holder is reinstated (a)
++provisionally, unless and until the copyright holder explicitly and
++finally terminates your license, and (b) permanently, if the copyright
++holder fails to notify you of the violation by some reasonable means
++prior to 60 days after the cessation.
++
++Moreover, your license from a particular copyright holder is
++reinstated permanently if the copyright holder notifies you of the
++violation by some reasonable means, this is the first time you have
++received notice of violation of this License (for any work) from that
++copyright holder, and you cure the violation prior to 30 days after
++your receipt of the notice.
++
++Termination of your rights under this section does not terminate the
++licenses of parties who have received copies or rights from you under
++this License.  If your rights have been terminated and not permanently
++reinstated, you do not qualify to receive new licenses for the same
++material under section 10.
++
++9. Acceptance Not Required for Having Copies.
++
++You are not required to accept this License in order to receive or
++run a copy of the Program.  Ancillary propagation of a covered work
++occurring solely as a consequence of using peer-to-peer transmission
++to receive a copy likewise does not require acceptance.  However,
++nothing other than this License grants you permission to propagate or
++modify any covered work.  These actions infringe copyright if you do
++not accept this License.  Therefore, by modifying or propagating a
++covered work, you indicate your acceptance of this License to do so.
++
++10. Automatic Licensing of Downstream Recipients.
++
++Each time you convey a covered work, the recipient automatically
++receives a license from the original licensors, to run, modify and
++propagate that work, subject to this License.  You are not responsible
++for enforcing compliance by third parties with this License.
++
++An "entity transaction" is a transaction transferring control of an
++organization, or substantially all assets of one, or subdividing an
++organization, or merging organizations.  If propagation of a covered
++work results from an entity transaction, each party to that
++transaction who receives a copy of the work also receives whatever
++licenses to the work the party's predecessor in interest had or could
++give under the previous paragraph, plus a right to possession of the
++Corresponding Source of the work from the predecessor in interest, if
++the predecessor has it or can get it with reasonable efforts.
++
++You may not impose any further restrictions on the exercise of the
++rights granted or affirmed under this License.  For example, you may
++not impose a license fee, royalty, or other charge for exercise of
++rights granted under this License, and you may not initiate litigation
++(including a cross-claim or counterclaim in a lawsuit) alleging that
++any patent claim is infringed by making, using, selling, offering for
++sale, or importing the Program or any portion of it.
++
++11. Patents.
++
++A "contributor" is a copyright holder who authorizes use under this
++License of the Program or a work on which the Program is based.  The
++work thus licensed is called the contributor's "contributor version".
++
++A contributor's "essential patent claims" are all patent claims
++owned or controlled by the contributor, whether already acquired or
++hereafter acquired, that would be infringed by some manner, permitted
++by this License, of making, using, or selling its contributor version,
++but do not include claims that would be infringed only as a
++consequence of further modification of the contributor version.  For
++purposes of this definition, "control" includes the right to grant
++patent sublicenses in a manner consistent with the requirements of
++this License.
++
++Each contributor grants you a non-exclusive, worldwide, royalty-free
++patent license under the contributor's essential patent claims, to
++make, use, sell, offer for sale, import and otherwise run, modify and
++propagate the contents of its contributor version.
++
++In the following three paragraphs, a "patent license" is any express
++agreement or commitment, however denominated, not to enforce a patent
++(such as an express permission to practice a patent or covenant not to
++sue for patent infringement).  To "grant" such a patent license to a
++party means to make such an agreement or commitment not to enforce a
++patent against the party.
++
++If you convey a covered work, knowingly relying on a patent license,
++and the Corresponding Source of the work is not available for anyone
++to copy, free of charge and under the terms of this License, through a
++publicly available network server or other readily accessible means,
++then you must either (1) cause the Corresponding Source to be so
++available, or (2) arrange to deprive yourself of the benefit of the
++patent license for this particular work, or (3) arrange, in a manner
++consistent with the requirements of this License, to extend the patent
++license to downstream recipients.  "Knowingly relying" means you have
++actual knowledge that, but for the patent license, your conveying the
++covered work in a country, or your recipient's use of the covered work
++in a country, would infringe one or more identifiable patents in that
++country that you have reason to believe are valid.
++
++If, pursuant to or in connection with a single transaction or
++arrangement, you convey, or propagate by procuring conveyance of, a
++covered work, and grant a patent license to some of the parties
++receiving the covered work authorizing them to use, propagate, modify
++or convey a specific copy of the covered work, then the patent license
++you grant is automatically extended to all recipients of the covered
++work and works based on it.
++
++A patent license is "discriminatory" if it does not include within
++the scope of its coverage, prohibits the exercise of, or is
++conditioned on the non-exercise of one or more of the rights that are
++specifically granted under this License.  You may not convey a covered
++work if you are a party to an arrangement with a third party that is
++in the business of distributing software, under which you make payment
++to the third party based on the extent of your activity of conveying
++the work, and under which the third party grants, to any of the
++parties who would receive the covered work from you, a discriminatory
++patent license (a) in connection with copies of the covered work
++conveyed by you (or copies made from those copies), or (b) primarily
++for and in connection with specific products or compilations that
++contain the covered work, unless you entered into that arrangement,
++or that patent license was granted, prior to 28 March 2007.
++
++Nothing in this License shall be construed as excluding or limiting
++any implied license or other defenses to infringement that may
++otherwise be available to you under applicable patent law.
++
++12. No Surrender of Others' Freedom.
++
++If conditions are imposed on you (whether by court order, agreement or
++otherwise) that contradict the conditions of this License, they do not
++excuse you from the conditions of this License.  If you cannot convey a
++covered work so as to satisfy simultaneously your obligations under this
++License and any other pertinent obligations, then as a consequence you may
++not convey it at all.  For example, if you agree to terms that obligate you
++to collect a royalty for further conveying from those to whom you convey
++the Program, the only way you could satisfy both those terms and this
++License would be to refrain entirely from conveying the Program.
++
++13. Use with the GNU Affero General Public License.
++
++Notwithstanding any other provision of this License, you have
++permission to link or combine any covered work with a work licensed
++under version 3 of the GNU Affero General Public License into a single
++combined work, and to convey the resulting work.  The terms of this
++License will continue to apply to the part which is the covered work,
++but the special requirements of the GNU Affero General Public License,
++section 13, concerning interaction through a network will apply to the
++combination as such.
++
++14. Revised Versions of this License.
++
++The Free Software Foundation may publish revised and/or new versions of
++the GNU General Public License from time to time.  Such new versions will
++be similar in spirit to the present version, but may differ in detail to
++address new problems or concerns.
++
++Each version is given a distinguishing version number.  If the
++Program specifies that a certain numbered version of the GNU General
++Public License "or any later version" applies to it, you have the
++option of following the terms and conditions either of that numbered
++version or of any later version published by the Free Software
++Foundation.  If the Program does not specify a version number of the
++GNU General Public License, you may choose any version ever published
++by the Free Software Foundation.
++
++If the Program specifies that a proxy can decide which future
++versions of the GNU General Public License can be used, that proxy's
++public statement of acceptance of a version permanently authorizes you
++to choose that version for the Program.
++
++Later license versions may give you additional or different
++permissions.  However, no additional obligations are imposed on any
++author or copyright holder as a result of your choosing to follow a
++later version.
++
++15. Disclaimer of Warranty.
++
++THERE IS NO WARRANTY FOR THE PROGRAM, TO THE EXTENT PERMITTED BY
++APPLICABLE LAW.  EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT
++HOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM "AS IS" WITHOUT WARRANTY
++OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO,
++THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++PURPOSE.  THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE PROGRAM
++IS WITH YOU.  SHOULD THE PROGRAM PROVE DEFECTIVE, YOU ASSUME THE COST OF
++ALL NECESSARY SERVICING, REPAIR OR CORRECTION.
++
++16. Limitation of Liability.
++
++IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING
++WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MODIFIES AND/OR CONVEYS
++THE PROGRAM AS PERMITTED ABOVE, BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY
++GENERAL, SPECIAL, INCIDENTAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE
++USE OR INABILITY TO USE THE PROGRAM (INCLUDING BUT NOT LIMITED TO LOSS OF
++DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD
++PARTIES OR A FAILURE OF THE PROGRAM TO OPERATE WITH ANY OTHER PROGRAMS),
++EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF
++SUCH DAMAGES.
++
++17. Interpretation of Sections 15 and 16.
++
++If the disclaimer of warranty and limitation of liability provided
++above cannot be given local legal effect according to their terms,
++reviewing courts shall apply local law that most closely approximates
++an absolute waiver of all civil liability in connection with the
++Program, unless a warranty or assumption of liability accompanies a
++copy of the Program in return for a fee.
++
++ END OF TERMS AND CONDITIONS
++
++How to Apply These Terms to Your New Programs
++
++If you develop a new program, and you want it to be of the greatest
++possible use to the public, the best way to achieve this is to make it
++free software which everyone can redistribute and change under these terms.
++
++To do so, attach the following notices to the program.  It is safest
++to attach them to the start of each source file to most effectively
++state the exclusion of warranty; and each file should have at least
++the "copyright" line and a pointer to where the full notice is found.
++
++{one line to give the program's name and a brief idea of what it does.}
++Copyright (C) {year}  {name of author}
++
++This program is free software: you can redistribute it and/or modify
++it under the terms of the GNU General Public License as published by
++the Free Software Foundation, either version 3 of the License, or
++(at your option) any later version.
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details.
++
++You should have received a copy of the GNU General Public License
++along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++Also add information on how to contact you by electronic and paper mail.
++
++If the program does terminal interaction, make it output a short
++notice like this when it starts in an interactive mode:
++
++{project}  Copyright (C) {year}  {fullname}
++This program comes with ABSOLUTELY NO WARRANTY; for details type `show w'.
++This is free software, and you are welcome to redistribute it
++under certain conditions; type `show c' for details.
++
++The hypothetical commands `show w' and `show c' should show the appropriate
++parts of the General Public License.  Of course, your program's commands
++might be different; for a GUI interface, you would use an "about box".
++
++You should also get your employer (if you work as a programmer) or school,
++if any, to sign a "copyright disclaimer" for the program, if necessary.
++For more information on this, and how to apply and follow the GNU GPL, see
++<http://www.gnu.org/licenses/>.
++
++The GNU General Public License does not permit incorporating your program
++into proprietary programs.  If your program is a subroutine library, you
++may consider it more useful to permit linking proprietary applications with
++the library.  If this is what you want to do, use the GNU Lesser General
++Public License instead of this License.  But first, please read
++<http://www.gnu.org/philosophy/why-not-lgpl.html>.
+diff --git a/scripts/repo-add/build-aux/dist-vendor.sh b/scripts/repo-add/build-aux/dist-vendor.sh
+new file mode 100755
+index 00000000..be732783
+--- /dev/null
++++ b/scripts/repo-add/build-aux/dist-vendor.sh
+@@ -0,0 +1,10 @@
++#!/bin/bash
++export DIST="$1"
++export SOURCE_ROOT="$2"
++
++cd "$SOURCE_ROOT"
++mkdir "$DIST"/.cargo
++cargo vendor | sed 's/^directory = ".*"/directory = "vendor"/g' > $DIST/.cargo/config
++# Move vendor into dist tarball directory
++mv vendor "$DIST"
++
+diff --git a/scripts/repo-add/meson.build b/scripts/repo-add/meson.build
+new file mode 100644
+index 00000000..20ad7c90
+--- /dev/null
++++ b/scripts/repo-add/meson.build
+@@ -0,0 +1,14 @@
++cargo = find_program('cargo', required: true)
++
++meson.add_dist_script(
++  'build-aux/dist-vendor.sh',
++  meson.build_root() / 'meson-dist' / 'repo-add' + '-' + PACKAGE_VERSION,
++  meson.source_root()
++)
++
++cargo_sources = files(
++  'Cargo.toml',
++  'Cargo.lock',
++)
++
++subdir('src')
+diff --git a/scripts/repo-add/rustfmt.toml b/scripts/repo-add/rustfmt.toml
+new file mode 100644
+index 00000000..28f8a96a
+--- /dev/null
++++ b/scripts/repo-add/rustfmt.toml
+@@ -0,0 +1,16 @@
++edition = "2021"
++format_code_in_doc_comments = true
++match_block_trailing_comma = true
++condense_wildcard_suffixes = true
++use_field_init_shorthand = true
++normalize_doc_attributes = true
++overflow_delimited_expr = true
++imports_granularity = "Module"
++use_small_heuristics = "Max"
++normalize_comments = true
++reorder_impl_items = true
++use_try_shorthand = true
++newline_style = "Unix"
++format_strings = true
++wrap_comments = true
++comment_width = 100
+diff --git a/scripts/repo-add/src/config.rs.in b/scripts/repo-add/src/config.rs.in
+new file mode 100644
+index 00000000..8fa2bbcb
+--- /dev/null
++++ b/scripts/repo-add/src/config.rs.in
+@@ -0,0 +1 @@
++pub const VERSION: &str = @VERSION@;
+diff --git a/scripts/repo-add/src/main.rs b/scripts/repo-add/src/main.rs
+new file mode 100644
+index 00000000..b130a586
+--- /dev/null
++++ b/scripts/repo-add/src/main.rs
+@@ -0,0 +1,886 @@
++mod parse_args;
++mod pkginfo;
++mod config;
++mod utils;
++
++use config::VERSION;
++use fern::colors::{Color, ColoredLevelConfig};
++use lazy_static::lazy_static;
++use path_absolutize::*;
++use rand::Rng;
++use rayon::prelude::*;
++use signal_hook::consts::{SIGABRT, SIGINT, SIGTERM};
++use signal_hook::iterator::Signals;
++use std::collections::HashSet;
++use std::fs::File;
++use std::io::Write;
++use std::path::Path;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{Arc, Mutex};
++use std::{env, fs, str};
++
++macro_rules! handle_signal {
++    ($is_signaled:expr) => {
++        if $is_signaled.load(Ordering::Relaxed) {
++            return;
++        }
++    };
++}
++
++macro_rules! handle_signal_ext {
++    // If a signal was received, wait for the signal handler thread to finish and clean up resources
++    // before exiting
++    ($is_signaled:expr,$sig_handle:expr) => {
++        if $is_signaled.load(Ordering::SeqCst) {
++            $sig_handle.join().unwrap();
++            clean_up();
++            return;
++        }
++    };
++}
++
++lazy_static! {
++    static ref G_TMPWORKINGDIR: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
++}
++
++// print usage instructions
++fn print_usage(cmd_line: &str) {
++    let cmd_line = utils::get_current_cmdname(cmd_line);
++    println!("{} (pacman) {}\n", cmd_line, VERSION);
++    if cmd_line == "repo-add" {
++        println!("Usage: repo-add [options] <path-to-db> <package> ...\n");
++        println!("repo-add will update a package database by reading a package file.");
++        println!("Multiple packages to add can be specified on the command line.\n");
++        println!("Options:");
++        println!("  -n, --new         only add packages that are not already in the database");
++        println!("  -R, --remove      remove old package file from disk after updating database");
++        println!(
++            "  -p, --prevent-downgrade  do not add package to database if a newer version is \
++             already present"
++        );
++    } else if cmd_line == "repo-remove" {
++        println!("Usage: repo-remove [options] <path-to-db> <packagename> ...\n");
++        println!("repo-remove will update a package database by removing the package name");
++        println!("specified on the command line from the given repo database. Multiple");
++        println!("packages to remove can be specified on the command line.\n");
++        println!("Options:");
++    } else {
++        println!("Please move along, there is nothing to see here.");
++        return;
++    }
++    println!("  --nocolor         turn off color in output");
++    println!("  -q, --quiet       minimize output");
++    println!("  -s, --sign        sign database with GnuPG after update");
++    println!("  -k, --key <key>   use the specified key to sign the database");
++    println!("  -v, --verify      verify database's signature before update");
++    println!("\nSee {}(8) for more details and descriptions of the available options.\n", cmd_line);
++
++    if cmd_line == "repo-add" {
++        println!("Example:  repo-add /path/to/repo.db.tar.gz pacman-3.0.0-1-i686.pkg.tar.gz");
++    } else if cmd_line == "repo-remove" {
++        println!("Example:  repo-remove /path/to/repo.db.tar.gz kernel26");
++    }
++}
++
++// print version
++fn print_version(cmd_line: &str) {
++    let cmd_line = utils::get_current_cmdname(cmd_line);
++    println!("{} (pacman) {}\n", cmd_line, VERSION);
++    println!("Copyright (c) 2023 CachyOS Team.\n");
++    println!("This is free software; see the source for copying conditions.");
++    println!("There is NO WARRANTY, to the extent permitted by law.");
++}
++
++// print elephant
++fn print_elephant() {
++    let mut rng = rand::thread_rng();
++    let random_num = rng.gen::<u8>() % 2;
++    #[rustfmt::skip]
++    let encoded_elephant = if random_num == 0 {
++        "H4sIAL3qBE4CAyWLwQ3AMAgD/0xh5UPzYiFUMgjq7LUJsk7yIQNAQTAikFUDnqkrOQFOUm0Wd9pHCi13ONjBpVdqcWx+EdXVX4vXvGv5cgztB9+fJxZ7AAAA\n"
++    } else {
++        "H4sIAJVWBU4CA21RMQ7DIBDbeYWrDgQJ7rZ+IA/IB05l69alcx5fc0ASVXUk4jOO\n7yAAUWtorygwJ4hlMii0YkJKKRKGvsMsiykl1SalvrMD1gUXyXRkGZPx5OPft81K\ntNAiAjyGjYO47h1JjizPkJrCWbK/4C+uLkT7bzpGc7CT9bmOzNSW5WLSO5vexjmH\nZL9JFFZeAa0a2+lKjL2anpYfV+0Zx9LJ+/MC8nRayuDlSNy2rfAPibOzsiWHL0jLSsjFAQAA\n"
++    };
++
++    print!(
++        "{}",
++        utils::exec(
++            &format!("printf \"%s\" '{encoded_elephant}' | base64 -d | gzip -d"),
++            Some(true)
++        )
++        .0
++    );
++}
++
++// format a metadata entry
++#[inline]
++fn format_entry(field_name: &str, value: &Option<String>) -> String {
++    if value.is_none() {
++        return String::new();
++    }
++    format!("%{}%\n{}\n\n", field_name, value.as_ref().unwrap())
++}
++
++fn format_entry_mul(field_name: &str, values: &[String]) -> String {
++    if values.is_empty() {
++        return String::new();
++    }
++
++    let mut result = String::from(&format!("%{}%\n", field_name));
++    for value in values.iter() {
++        result.push_str(&format!("{}\n", value));
++    }
++
++    result += "\n";
++    result
++}
++
++fn find_pkgentry(pkgname: &str) -> Option<String> {
++    let workingdb_path = format!("{}/db", *G_TMPWORKINGDIR.lock().unwrap());
++    for dir_entry in fs::read_dir(workingdb_path).unwrap() {
++        let dir_entry_path = dir_entry.as_ref().unwrap().path();
++        let entry_pkgname = utils::get_name_of_pkg(&dir_entry_path.to_str().unwrap(), true);
++        if entry_pkgname == pkgname {
++            return Some(dir_entry_path.to_str().unwrap().to_owned());
++        }
++    }
++    None
++}
++
++// remove existing entries from the DB
++fn db_remove_entry(pkgname: &str) -> bool {
++    let mut is_found = false;
++
++    while let Some(pkgentry) = find_pkgentry(pkgname) {
++        is_found = true;
++
++        log::info!(
++            "Removing existing entry '{}'...",
++            Path::new(&pkgentry).file_name().unwrap().to_str().unwrap()
++        );
++        let _ = fs::remove_dir_all(&pkgentry);
++
++        // remove entries in "files" database
++        let (filesentry, _) = utils::exec(
++            &format!("echo \"{}\" | sed 's/\\(.*\\)\\/db\\//\\1\\/files\\//'", &pkgentry),
++            None,
++        );
++        let _ = fs::remove_dir_all(filesentry);
++    }
++    is_found
++}
++
++fn check_gpg(argstruct: &parse_args::ArgStruct) -> bool {
++    if !Path::new("/sbin/gpg").exists() {
++        log::error!("Cannot find the gpg binary! Is GnuPG installed?");
++        return false;
++    }
++    if !argstruct.verify {
++        let (_, ret_status) = utils::exec(
++            &format!(
++                "gpg --list-secret-key {} &>/dev/null",
++                argstruct.gpgkey.as_ref().unwrap_or(&String::new())
++            ),
++            Some(true),
++        );
++        if !ret_status {
++            if argstruct.gpgkey.is_some() && !argstruct.gpgkey.as_ref().unwrap().is_empty() {
++                log::error!(
++                    "The key {} does not exist in your keyring.",
++                    argstruct.gpgkey.as_ref().unwrap()
++                );
++            } else if !argstruct.key {
++                log::error!("There is no key in your keyring.");
++            }
++            return false;
++        }
++    }
++    true
++}
++
++// sign the package database once repackaged
++fn create_signature(dbfile: &str, argstruct: &Arc<parse_args::ArgStruct>) -> bool {
++    if !argstruct.sign {
++        return true;
++    }
++
++    let mut db_name = String::from(dbfile);
++    if let Some(strpos) = db_name.find(".tmp.") {
++        db_name = String::from(utils::string_substr(&db_name, strpos + 5, usize::MAX).unwrap());
++    }
++    log::info!("Signing database '{}'...", db_name);
++
++    let mut signwithkey = String::new();
++    if argstruct.gpgkey.is_some() && !argstruct.gpgkey.as_ref().unwrap().is_empty() {
++        signwithkey = format!("-u \"{}\"", argstruct.gpgkey.as_ref().unwrap());
++    }
++
++    let (_, ret_code) = utils::exec(
++        &format!(
++            "gpg --detach-sign --use-agent --no-armor {} \"{}\" &>/dev/null",
++            signwithkey, dbfile
++        ),
++        Some(true),
++    );
++    if ret_code {
++        log::info!("Created signature file '{}.sig'", db_name);
++        return true;
++    }
++    log::error!("Failed to sign package database file '{}'", db_name);
++    false
++}
++
++// verify the existing package database signature
++fn verify_signature(dbfile: &str, argstruct: &Arc<parse_args::ArgStruct>) -> bool {
++    if !argstruct.verify {
++        return true;
++    }
++
++    log::info!("Verifying database signature...");
++    if !Path::new(&format!("{}.sig", dbfile)).exists() {
++        log::warn!("No existing signature found, skipping verification.");
++        return true;
++    }
++
++    let (_, ret_code) = utils::exec(&format!("gpg --verify \"{}.sig\"", dbfile), Some(true));
++    if ret_code {
++        log::info!("Database signature file verified.");
++        return true;
++    }
++    log::error!("Database signature was NOT valid!");
++    false
++}
++
++fn verify_repo_extension(dbpath: &str) -> bool {
++    if dbpath.find(".db.tar").is_some() {
++        let strpos = dbpath.find(".db").unwrap();
++        let extension = utils::string_substr(dbpath, strpos + 4, usize::MAX).unwrap();
++        if !utils::get_compression_command(extension).is_empty() {
++            return true;
++        }
++    }
++
++    log::error!("'{}' does not have a valid database archive extension.", dbpath);
++    false
++}
++
++// write an entry to the pacman database
++fn db_write_entry(pkgpath: &str, argstruct: &Arc<parse_args::ArgStruct>) -> bool {
++    // read info from the zipped package
++    let pkginfo = pkginfo::PkgInfo::from_archive(pkgpath);
++
++    // ensure 'pkgname' and 'pkgver' variables were found
++    if !pkginfo.pkgname.is_some() || !pkginfo.pkgver.is_some() {
++        log::error!("Invalid package file '{}'.", pkgpath);
++        return false;
++    }
++
++    let mut oldfilename: Option<String> = None;
++    let mut oldfile: Option<String> = None;
++
++    let workingdb_path = format!("{}/db", *G_TMPWORKINGDIR.lock().unwrap());
++    let pkg_entrypath =
++        format!("{}-{}", pkginfo.pkgname.as_ref().unwrap(), pkginfo.pkgver.as_ref().unwrap());
++    if Path::new(&format!("{}/{}", &workingdb_path, &pkg_entrypath)).exists() {
++        log::warn!("An entry for '{}' already existed", &pkg_entrypath);
++        if argstruct.only_add_new {
++            return true;
++        }
++    } else if let Some(pkgentry) = find_pkgentry(pkginfo.pkgname.as_ref().unwrap()) {
++        let version = utils::exec(
++            &format!("sed -n '/^%VERSION%$/ {}' \"{}/desc\"", "{n;p;q}", pkgentry),
++            None,
++        )
++        .0;
++        let vercmp = utils::exec(
++            &format!("vercmp \"{}\" \"{}\"", version, pkginfo.pkgver.as_ref().unwrap()),
++            None,
++        )
++        .0;
++        if vercmp.parse::<i32>().unwrap() > 0 {
++            log::warn!(
++                "A newer version for '{}' is already present in database",
++                pkginfo.pkgname.as_ref().unwrap()
++            );
++            if argstruct.prevent_downgrade {
++                return true;
++            }
++        }
++        if argstruct.rm_existing {
++            oldfilename = Some(
++                utils::exec(
++                    &format!("sed -n '/^%FILENAME%$/ {}' \"{}/desc\"", "{n;p;q;}", pkgentry),
++                    None,
++                )
++                .0,
++            );
++            oldfile = Some(
++                utils::exec(
++                    &format!(
++                        "{}/{}",
++                        Path::new(pkgpath).parent().unwrap().to_string_lossy(),
++                        oldfilename.as_ref().unwrap()
++                    ),
++                    None,
++                )
++                .0,
++            );
++        }
++    }
++
++    // compute base64'd PGP signature
++    let mut pkg_pgpsig: Option<String> = None;
++    if Path::new(&format!("{}.sig", pkginfo.pkgname.as_ref().unwrap())).exists() {
++        let sig_filename = format!("{}.sig", pkginfo.pkgname.as_ref().unwrap());
++        if utils::exec(&format!("grep -q 'BEGIN PGP SIGNATURE' \"{}\"", &sig_filename), Some(true))
++            .1
++        {
++            log::error!("Cannot use armored signatures for packages: {}", &sig_filename);
++            return false;
++        }
++
++        let pgpsigsize = fs::metadata(&sig_filename).unwrap().len();
++        if pgpsigsize > 16384 {
++            log::error!("Invalid package signature file '{}'.", &sig_filename);
++            return false;
++        }
++        log::info!("Adding package signature...");
++        pkg_pgpsig =
++            Some(utils::exec(&format!("base64 \"{}\" | tr -d '\n'", sig_filename), None).0);
++    }
++
++    let csize = format!("{}", fs::metadata(pkgpath).unwrap().len());
++
++    // compute checksums
++    log::info!("Computing checksums...");
++    let pkg_md5sum = utils::generate_md5sum(pkgpath);
++    let pkg_sha256sum = utils::generate_sha256sum(pkgpath);
++
++    // remove an existing entry if it exists, ignore failures
++    db_remove_entry(pkginfo.pkgname.as_ref().unwrap());
++
++    // create package directory
++    let _ = fs::create_dir(format!("{}/{}", &workingdb_path, &pkg_entrypath));
++
++    // create desc entry
++    log::info!("Creating 'desc' db entry...");
++    {
++        let mut desc_content = String::new();
++        desc_content.push_str(&format_entry(
++            "FILENAME",
++            &Some(Path::new(pkgpath).file_name().unwrap().to_string_lossy().to_string()),
++        ));
++        desc_content.push_str(&format_entry("NAME", &pkginfo.pkgname));
++        desc_content.push_str(&format_entry("BASE", &pkginfo.pkgbase));
++        desc_content.push_str(&format_entry("VERSION", &pkginfo.pkgver));
++        desc_content.push_str(&format_entry("DESC", &pkginfo.pkgdesc));
++        desc_content.push_str(&format_entry_mul("GROUPS", &pkginfo.groups));
++        desc_content.push_str(&format_entry("CSIZE", &Some(csize)));
++        desc_content.push_str(&format_entry("ISIZE", &pkginfo.pkg_isize));
++
++        // add checksums
++        desc_content.push_str(&format_entry("MD5SUM", &pkg_md5sum));
++        desc_content.push_str(&format_entry("SHA256SUM", &pkg_sha256sum));
++
++        // add PGP sig
++        desc_content.push_str(&format_entry("PGPSIG", &pkg_pgpsig));
++
++        desc_content.push_str(&format_entry("URL", &pkginfo.url));
++        desc_content.push_str(&format_entry_mul("LICENSE", &pkginfo.licenses));
++        desc_content.push_str(&format_entry("ARCH", &pkginfo.arch));
++        desc_content.push_str(&format_entry("BUILDDATE", &pkginfo.builddate));
++        desc_content.push_str(&format_entry("PACKAGER", &pkginfo.packager));
++        desc_content.push_str(&format_entry_mul("REPLACES", &pkginfo.replaces));
++        desc_content.push_str(&format_entry_mul("CONFLICTS", &pkginfo.conflicts));
++        desc_content.push_str(&format_entry_mul("PROVIDES", &pkginfo.provides));
++
++        desc_content.push_str(&format_entry_mul("DEPENDS", &pkginfo.depends));
++        desc_content.push_str(&format_entry_mul("OPTDEPENDS", &pkginfo.optdepends));
++        desc_content.push_str(&format_entry_mul("MAKEDEPENDS", &pkginfo.makedepends));
++        desc_content.push_str(&format_entry_mul("CHECKDEPENDS", &pkginfo.checkdepends));
++
++        let mut desc_entry_file =
++            File::create(&format!("{}/{}/desc", &workingdb_path, &pkg_entrypath)).unwrap();
++        let _ = desc_entry_file.write_all(desc_content.as_bytes());
++    }
++
++    // copy updated package entry into "files" database
++    let mut options = fs_extra::dir::CopyOptions::new();
++    options.overwrite = true;
++    options.copy_inside = true;
++    let _ = fs_extra::dir::copy(
++        format!("{}/db/{}", *G_TMPWORKINGDIR.lock().unwrap(), &pkg_entrypath),
++        format!("{}/files/{}", *G_TMPWORKINGDIR.lock().unwrap(), &pkg_entrypath),
++        &options,
++    )
++    .unwrap();
++
++    // create files file
++    log::info!("Creating 'files' db entry...");
++    let files_path = format!("{}/files/{}/files", *G_TMPWORKINGDIR.lock().unwrap(), &pkg_entrypath);
++
++    let mut file_list = pkginfo::list_archive(pkgpath);
++    file_list.sort();
++    let mut sorted_files =
++        file_list.into_iter().collect::<HashSet<String>>().into_iter().collect::<Vec<String>>();
++    sorted_files.sort();
++    let _ = utils::write_to_file(&files_path, &format!("%FILES%\n{}\n", sorted_files.join("\n")));
++
++    if argstruct.rm_existing && oldfile.is_some() {
++        log::info!("Removing old package file '{}'", oldfilename.as_ref().unwrap());
++        let _ = fs::remove_file(oldfile.as_ref().unwrap());
++        let _ = fs::remove_file(&format!("{}.sig", oldfile.as_ref().unwrap()));
++    }
++
++    true
++}
++
++fn prepare_repo_db(cmd_line: &str, argstruct: &Arc<parse_args::ArgStruct>) -> bool {
++    // ensure the path to the DB exists; LOCKFILE is always an absolute path
++    let repodir = Path::new(argstruct.lockfile.as_ref().unwrap()).parent();
++    if !repodir.as_ref().unwrap().exists() {
++        log::error!("{} does not exist.", repodir.as_ref().unwrap().to_string_lossy());
++        return false;
++    }
++    let repos = ["db", "files"];
++    for repo in repos {
++        let dbfile = format!(
++            "{}/{}.{}.{}",
++            repodir.as_ref().unwrap().to_string_lossy(),
++            argstruct.repo_db_prefix.as_ref().unwrap(),
++            repo,
++            argstruct.repo_db_suffix.as_ref().unwrap()
++        );
++
++        if Path::new(&dbfile).exists() {
++            // there are two situations we can have here:
++            // a DB with some entries, or a DB with no contents at all.
++            if !utils::exec(
++                &format!("bsdtar -tqf \"{}\" '*/desc' >/dev/null 2>&1", &dbfile),
++                Some(true),
++            )
++            .1
++            {
++                // check empty case
++                if !utils::exec(&format!("bsdtar -tqf \"{}\" '*' 2>/dev/null", &dbfile), None)
++                    .0
++                    .is_empty()
++                {
++                    log::error!("Repository file '{}' is not a proper pacman database.", &dbfile);
++                    return false;
++                }
++            }
++            if !verify_signature(&dbfile, argstruct) {
++                return false;
++            }
++            log::info!(
++                "Extracting {} to a temporary location...",
++                Path::new(&dbfile).file_name().unwrap().to_str().unwrap()
++            );
++            utils::exec(
++                &format!(
++                    "bsdtar -xf \"{}\" -C \"{}/{}\"",
++                    dbfile,
++                    *G_TMPWORKINGDIR.lock().unwrap(),
++                    repo
++                ),
++                None,
++            );
++        } else {
++            // only a missing "db" database is currently an error
++            if cmd_line.ends_with("repo-remove") && repo == "db" {
++                log::error!("Repository file '{}' was not found.", dbfile);
++                return false;
++            } else if cmd_line.ends_with("repo-add") {
++                // check if the file can be created (write permission, directory existence, etc)
++                if !utils::exec(&format!("touch \"{}\" &>/dev/null", &dbfile), Some(true)).1 {
++                    log::error!("Repository file '{}' could not be created.", &dbfile);
++                    return false;
++                }
++                let _ = fs::remove_file(dbfile);
++            }
++        }
++    }
++    true
++}
++
++fn rotate_db(argstruct: &Arc<parse_args::ArgStruct>, is_signaled: &Arc<AtomicBool>) {
++    let saved_dir = env::current_dir().unwrap_or("".into());
++    {
++        let dirname = Path::new(argstruct.lockfile.as_ref().unwrap()).parent();
++        let _ = env::set_current_dir(&dirname.unwrap());
++    }
++
++    let repos = ["db", "files"];
++    repos.into_par_iter().for_each(|repo| {
++        handle_signal!(is_signaled);
++        let dirname = Path::new(argstruct.lockfile.as_ref().unwrap()).parent();
++        let filename = format!(
++            "{}.{}.{}",
++            argstruct.repo_db_prefix.as_ref().unwrap(),
++            repo,
++            argstruct.repo_db_suffix.as_ref().unwrap()
++        );
++        let tempname =
++            format!("{}/.tmp.{}", dirname.as_ref().unwrap().to_string_lossy(), &filename);
++        let sig_filename = format!("{}.sig", &filename);
++
++        // hardlink or move the previous version of the database and signature to .old
++        // extension as a backup measure
++        if dirname.as_ref().unwrap().exists() {
++            let old_filename = format!("{}.old", &filename);
++            if !utils::exec(
++                &format!("ln -f \"{}\" \"{}\" 2>/dev/null", &filename, &old_filename),
++                Some(true),
++            )
++            .1
++            {
++                let _ = fs::rename(&filename, &old_filename);
++            }
++
++            let old_sig_filename = format!("{}.sig", &old_filename);
++            if Path::new(&sig_filename).exists() {
++                if !utils::exec(
++                    &format!("ln -f \"{}\" \"{}\" 2>/dev/null", &sig_filename, &old_sig_filename),
++                    Some(true),
++                )
++                .1
++                {
++                    let _ = fs::rename(&sig_filename, &old_sig_filename);
++                }
++            } else {
++                let _ = fs::remove_file(&old_sig_filename);
++            }
++        }
++
++        // rotate the newly-created database and signature into place
++        let _ = fs::rename(&tempname, &filename);
++        let sig_tempname = format!("{}.sig", &tempname);
++        if Path::new(&sig_tempname).exists() {
++            let _ = fs::rename(&sig_tempname, &sig_filename);
++        }
++
++        let dblink = format!("{}.{}", argstruct.repo_db_prefix.as_ref().unwrap(), repo);
++        let sig_dblink = format!("{}.sig", &dblink);
++        let _ = fs::remove_file(&dblink);
++        let _ = fs::remove_file(&sig_dblink);
++
++        if !utils::exec(&format!("ln -s \"{}\" \"{}\" 2>/dev/null", filename, dblink), Some(true)).1
++        {
++            if !utils::exec(&format!("ln \"{}\" \"{}\" 2>/dev/null", filename, dblink), Some(true))
++                .1
++            {
++                let _ = fs::copy(&filename, &dblink);
++            }
++        }
++
++        if Path::new(&sig_filename).exists() {
++            if !utils::exec(
++                &format!("ln -s \"{}\" \"{}\" 2>/dev/null", sig_filename, sig_dblink),
++                Some(true),
++            )
++            .1
++            {
++                if !utils::exec(
++                    &format!("ln \"{}\" \"{}\" 2>/dev/null", sig_filename, sig_dblink),
++                    Some(true),
++                )
++                .1
++                {
++                    let _ = fs::copy(&sig_filename, &sig_dblink);
++                }
++            }
++        }
++    });
++    let _ = env::set_current_dir(&saved_dir);
++}
++
++fn create_db(argstruct: &Arc<parse_args::ArgStruct>, is_signaled: &Arc<AtomicBool>) -> bool {
++    let is_fail = AtomicBool::new(false);
++
++    let repos = ["db", "files"];
++    repos.into_par_iter().for_each(|repo| {
++        handle_signal!(is_signaled);
++        // LOCKFILE is already guaranteed to be absolute so this is safe
++        let dirname = Path::new(argstruct.lockfile.as_ref().unwrap()).parent();
++        let filename = format!(
++            "{}.{}.{}",
++            argstruct.repo_db_prefix.as_ref().unwrap(),
++            repo,
++            argstruct.repo_db_suffix.as_ref().unwrap()
++        );
++        // this ensures we create it on the same filesystem, making moves atomic
++        let tempname =
++            format!("{}/.tmp.{}", dirname.as_ref().unwrap().to_string_lossy(), &filename);
++
++        let workingdb_path = format!("{}/{}", *G_TMPWORKINGDIR.lock().unwrap(), repo);
++        let mut files = fs::read_dir(&workingdb_path)
++            .unwrap()
++            .map(|res| {
++                res.map(|e| String::from(e.path().file_name().unwrap().to_str().unwrap())).unwrap()
++            })
++            .collect::<Vec<String>>()
++            .join(" ");
++        if files.is_empty() {
++            // we have no packages remaining? zip up some emptyness
++            log::warn!("No packages remain, creating empty database.");
++            files = "-T /dev/null".to_owned();
++        }
++
++        let compress_cmd =
++            utils::get_compression_command(argstruct.repo_db_suffix.as_ref().unwrap());
++        utils::exec(
++            &format!(
++                "cd \"{}\"; bsdtar -cf - {} | {} > \"{}\"",
++                &workingdb_path, files, compress_cmd, tempname
++            ),
++            None,
++        );
++
++        if !create_signature(&tempname, argstruct) {
++            is_fail.store(true, Ordering::Relaxed);
++        }
++    });
++
++    is_fail.load(Ordering::Acquire) == false
++}
++
++fn add_pkg_to_db(pkgfile: &str, argstruct: &Arc<parse_args::ArgStruct>) -> bool {
++    if !Path::new(pkgfile).exists() {
++        log::error!("File '{}' not found.", pkgfile);
++        return false;
++    }
++
++    if !utils::exec(&format!("bsdtar -tqf \"{}\" .PKGINFO >/dev/null 2>&1", pkgfile), Some(true)).1
++    {
++        log::error!("'{}' is not a package file, skipping", pkgfile);
++        return false;
++    }
++
++    log::info!("Adding package '{}'", pkgfile);
++    db_write_entry(pkgfile, argstruct)
++}
++
++fn remove_pkg_from_db(pkgname: &str, _argstruct: &Arc<parse_args::ArgStruct>) -> bool {
++    log::info!("Searching for package '{}'...", pkgname);
++    db_remove_entry(pkgname)
++}
++
++fn main() {
++    let args: Vec<String> = env::args().collect();
++    if args.len() > 1 {
++        let argument = args[1].as_str();
++        if argument == "--help" || argument == "-h" {
++            print_usage(args[0].as_str());
++            return;
++        } else if argument == "--version" || argument == "-V" {
++            print_version(args[0].as_str());
++            return;
++        }
++    }
++
++    // figure out what program we are
++    let cmd_line = utils::get_current_cmdname(args[0].as_str());
++    if cmd_line == "repo-elephant" {
++        print_elephant();
++        return;
++    }
++
++    if cmd_line != "repo-add" && cmd_line != "repo-remove" {
++        log::error!("Invalid command name '{}' specified.", cmd_line);
++        std::process::exit(1);
++    }
++
++    {
++        let tmpval = utils::create_temporary_directory(None);
++        if tmpval.is_none() {
++            log::error!("Cannot create temp directory for database building.");
++            std::process::exit(1);
++        }
++        *G_TMPWORKINGDIR.lock().unwrap() = tmpval.unwrap();
++    }
++    for repo in ["db", "files"] {
++        let repo_path = format!("{}/{}", *G_TMPWORKINGDIR.lock().unwrap(), repo);
++        let _ = fs::create_dir(repo_path);
++    }
++
++    // Create a shared atomic boolean to track if a signal was received
++    let is_signaled = Arc::new(AtomicBool::new(false));
++    let signal_clone = Arc::clone(&is_signaled);
++
++    // Set up signal handlers
++    let signals = Signals::new(&[SIGINT, SIGTERM, SIGABRT]);
++    if signals.is_err() {
++        log::error!("can't set signal handler: {:?}", signals);
++        clean_up();
++        std::process::exit(1);
++    }
++    let mut signals = signals.unwrap();
++    let sig_handle = std::thread::spawn(move || {
++        for signal in signals.forever() {
++            // Set the atomic boolean to true if a signal is received
++            signal_clone.store(true, Ordering::SeqCst);
++
++            if signal == SIGTERM {
++                exit_term_callback("SIGTERM signal caught. Exiting...");
++                return;
++            } else if signal == SIGINT {
++                exit_term_callback("Aborted by user! Exiting...");
++                return;
++            }
++
++            clean_up();
++            std::process::exit(0);
++        }
++    });
++
++    let (pos_args, mut arg_struct) = parse_args::parse_args(&args);
++    set_up_logging(arg_struct.use_colors);
++    if pos_args.is_none() || pos_args.unwrap().is_empty() {
++        print_usage(args[0].as_str());
++        clean_up();
++        return;
++    }
++
++    if arg_struct.quiet {
++        log::set_max_level(log::LevelFilter::Off);
++    }
++
++    arg_struct.repo_db_file = Some(pos_args.unwrap()[0].to_owned());
++    arg_struct.lockfile = Some(format!(
++        "{}.lck",
++        Path::new(&pos_args.unwrap()[0]).absolutize().unwrap().to_str().unwrap()
++    ));
++
++    // Verify DB extension
++    if !verify_repo_extension(arg_struct.repo_db_file.as_ref().unwrap().as_str()) {
++        clean_up();
++        std::process::exit(1);
++    }
++
++    arg_struct.repo_db_prefix =
++        Some(Path::new(&pos_args.unwrap()[0]).file_stem().unwrap().to_str().unwrap().to_owned());
++    if let Some(strpos) = arg_struct.repo_db_prefix.as_ref().unwrap().find(".db") {
++        arg_struct.repo_db_prefix = Some(String::from(
++            utils::string_substr(&arg_struct.repo_db_prefix.unwrap(), 0, strpos).unwrap(),
++        ));
++    }
++    arg_struct.repo_db_suffix = Some(pos_args.unwrap()[0].to_owned());
++    if let Some(strpos) = arg_struct.repo_db_suffix.as_ref().unwrap().find(".db") {
++        arg_struct.repo_db_suffix = Some(String::from(
++            utils::string_substr(&arg_struct.repo_db_suffix.unwrap(), strpos + 4, usize::MAX)
++                .unwrap(),
++        ));
++    }
++
++    // Check installed GPG
++    if (arg_struct.sign || arg_struct.verify) && !check_gpg(&arg_struct) {
++        clean_up();
++        std::process::exit(1);
++    }
++
++    // Prepare DB
++    let arg_struct = Arc::new(arg_struct);
++    if !prepare_repo_db(pos_args.unwrap()[0].as_str(), &arg_struct) {
++        clean_up();
++        std::process::exit(1);
++    }
++
++    let pos_args = pos_args.unwrap().get(1..);
++
++    let is_fail = AtomicBool::new(false);
++    pos_args.unwrap().into_par_iter().for_each(|elem| {
++        let action_func =
++            if arg_struct.cmd_line == "repo-remove" { remove_pkg_from_db } else { add_pkg_to_db };
++        handle_signal!(is_signaled);
++        if !action_func(&elem, &arg_struct) {
++            is_fail.store(true, Ordering::Relaxed);
++        }
++    });
++    handle_signal_ext!(is_signaled, sig_handle);
++
++    // if the whole operation was a success, re-zip and rotate databases
++    if is_fail.load(Ordering::Acquire) {
++        log::error!("No packages modified, nothing to do.");
++        clean_up();
++        std::process::exit(1);
++    }
++    handle_signal_ext!(is_signaled, sig_handle);
++    log::info!("Creating updated database file '{}'", arg_struct.repo_db_file.as_ref().unwrap());
++    if !create_db(&arg_struct, &is_signaled) {
++        clean_up();
++        std::process::exit(1);
++    }
++    rotate_db(&arg_struct, &is_signaled);
++
++    handle_signal_ext!(is_signaled, sig_handle);
++
++    // log::info!("argstruct: {:?}\n", arg_struct);
++    // log::info!("pos_args: {:?}\n", pos_args);
++    //
++    // let pkg_info = pkginfo::PkgInfo::from_file("../.PKGINFO");
++    // let pkg_info = pkginfo::PkgInfo::from_archive(
++    // "../firefox-developer-edition-110.0b2-1.1-x86_64.pkg.tar.zst",
++    // );
++    // log::info!("pkginfo: {:?}", pkg_info);
++    clean_up();
++}
++
++fn exit_term_callback(err_msg: &str) {
++    log::error!("{}", err_msg);
++    clean_up();
++    std::process::exit(1);
++}
++
++fn clean_up() {
++    if Path::new(&*G_TMPWORKINGDIR.lock().unwrap()).exists() {
++        let _ = fs::remove_dir_all(&*G_TMPWORKINGDIR.lock().unwrap());
++    }
++}
++
++// ===================== Logging Set Up =====================
++fn set_up_logging(is_colored: bool) {
++    // here we set up our fern Dispatch
++    if is_colored {
++        // configure colors for the whole line
++        let colors_line = ColoredLevelConfig::new()
++        .error(Color::Red)
++        .warn(Color::Yellow)
++        // we actually don't need to specify the color for debug and info, they are white by default
++        .info(Color::White)
++        .debug(Color::White)
++        // depending on the terminals color scheme, this is the same as the background color
++        .trace(Color::BrightBlack);
++
++        let colors_level = colors_line.clone().info(Color::Green);
++        fern::Dispatch::new()
++        .format(move |out, message, record| {
++            out.finish(format_args!(
++                "[{color_line}{level}{color_line}\x1B[0m] {message}",
++                color_line = format_args!(
++                    "\x1B[{}m",
++                    colors_line.get_color(&record.level()).to_fg_str()
++                ),
++                level = colors_level.color(record.level()),
++                message = message,
++            ));
++        })
++        // output to stdout
++        .chain(std::io::stdout())
++        .apply()
++        .unwrap();
++    } else {
++        fern::Dispatch::new()
++        .format(move |out, message, record| {
++            out.finish(format_args!(
++                "[{level}] {message}",
++                level = record.level(),
++                message = message,
++            ));
++        })
++        // output to stdout
++        .chain(std::io::stdout())
++        .apply()
++        .unwrap();
++    }
++}
+diff --git a/scripts/repo-add/src/meson.build b/scripts/repo-add/src/meson.build
+new file mode 100644
+index 00000000..820efe6c
+--- /dev/null
++++ b/scripts/repo-add/src/meson.build
+@@ -0,0 +1,50 @@
++global_conf = configuration_data()
++global_conf.set_quoted('VERSION', PACKAGE_VERSION)
++config = configure_file(
++  input: 'config.rs.in',
++  output: 'config.rs',
++  configuration: global_conf
++)
++# Copy the config.rs output to the source directory.
++run_command(
++  'cp',
++  meson.build_root() / 'scripts' / 'repo-add' / 'src' / 'config.rs',
++  meson.source_root() / 'scripts' / 'repo-add' / 'src' / 'config.rs',
++  check: true
++)
++
++manifest_path = meson.source_root() / 'scripts' / 'repo-add' / 'Cargo.toml'
++cargo_home = meson.build_root() / 'cargo-home'
++cargo_target_dir = meson.build_root() / 'src'
++
++cargo_options = [ '--manifest-path', manifest_path ]
++cargo_options += [ '--target-dir', cargo_target_dir ]
++
++if get_option('buildtype').startswith('debug')
++  rust_target = 'debug'
++  message('Building repo-add in debug mode')
++else
++  cargo_options += [ '--release' ]
++  rust_target = 'release'
++  message('Building repo-add in release mode')
++endif
++
++cargo_env = [ 'CARGO_HOME=' + cargo_home ]
++
++repo_add = custom_target(
++  'cargo-build',
++  build_by_default: true,
++  build_always_stale: true,
++  output: 'repo-add',
++  console: true,
++  install: true,
++  install_dir: BINDIR,
++  command: [
++    'env',
++    cargo_env,
++    cargo, 'build',
++    cargo_options,
++    '&&',
++    'cp', 'src' / rust_target / 'repo-add', '@OUTPUT@',
++  ]
++)
+diff --git a/scripts/repo-add/src/parse_args.rs b/scripts/repo-add/src/parse_args.rs
+new file mode 100644
+index 00000000..82eb6aef
+--- /dev/null
++++ b/scripts/repo-add/src/parse_args.rs
+@@ -0,0 +1,86 @@
++#[derive(Debug)]
++pub struct ArgStruct {
++    pub quiet: bool,
++    pub only_add_new: bool,
++    pub rm_existing: bool,
++    pub sign: bool,
++    pub key: bool,
++    pub verify: bool,
++    pub clean_lock: bool,
++    pub use_colors: bool,
++    pub prevent_downgrade: bool,
++
++    pub cmd_line: String,
++
++    pub repo_db_file: Option<String>,
++    pub repo_db_prefix: Option<String>,
++    pub repo_db_suffix: Option<String>,
++    pub lockfile: Option<String>,
++    pub gpgkey: Option<String>,
++}
++
++impl ArgStruct {
++    pub fn new() -> Self {
++        Self {
++            quiet: false,
++            only_add_new: false,
++            rm_existing: false,
++            sign: false,
++            key: false,
++            verify: false,
++            clean_lock: false,
++            use_colors: true,
++            prevent_downgrade: false,
++
++            cmd_line: String::new(),
++
++            repo_db_file: None,
++            repo_db_prefix: None,
++            repo_db_suffix: None,
++            lockfile: None,
++            gpgkey: None,
++        }
++    }
++}
++
++pub fn parse_args<'a>(pargs: &'a [String]) -> (Option<&[String]>, ArgStruct) {
++    let mut argstruct = ArgStruct::new();
++    argstruct.cmd_line = crate::utils::get_current_cmdname(pargs[0].as_str()).to_owned();
++
++    let mut i = 1;
++    while i < pargs.len() {
++        let argument = pargs[i].as_str();
++        if argument == "--quiet" || argument == "-q" {
++            argstruct.quiet = true;
++        } else if argument == "--new" || argument == "-n" {
++            argstruct.only_add_new = true;
++        } else if argument == "--remove" || argument == "-R" {
++            argstruct.rm_existing = true;
++        } else if argument == "--nocolor" {
++            argstruct.use_colors = false;
++        } else if argument == "--sign" || argument == "-s" {
++            argstruct.sign = true;
++        } else if argument == "--key" || argument == "-k" {
++            i += 1;
++            if i < pargs.len() {
++                argstruct.gpgkey = Some(pargs[i].clone());
++                argstruct.key = true;
++            }
++        } else if argument == "--verify" || argument == "-v" {
++            argstruct.verify = true;
++        } else if argument == "--prevent-downgrade" || argument == "-p" {
++            argstruct.prevent_downgrade = true;
++        } else if argument == "--" {
++            i += 1;
++            break;
++        } else {
++            break;
++        }
++        i += 1;
++    }
++    if i >= pargs.len() {
++        return (None, argstruct);
++    }
++
++    (pargs.get(i..), argstruct)
++}
+diff --git a/scripts/repo-add/src/pkginfo.rs b/scripts/repo-add/src/pkginfo.rs
+new file mode 100644
+index 00000000..96b1d969
+--- /dev/null
++++ b/scripts/repo-add/src/pkginfo.rs
+@@ -0,0 +1,180 @@
++use std::fs;
++use std::fs::File;
++
++use akv::reader::ArchiveReader;
++use log;
++
++#[derive(Debug)]
++pub struct PkgInfo {
++    pub pkgname: Option<String>,
++    pub pkgbase: Option<String>,
++    pub pkgver: Option<String>,
++    pub basever: Option<String>,
++    pub pkgdesc: Option<String>,
++    pub url: Option<String>,
++    pub builddate: Option<String>,
++    pub packager: Option<String>,
++    pub arch: Option<String>,
++    pub pkg_isize: Option<String>,
++
++    pub groups: Vec<String>,
++    pub licenses: Vec<String>,
++    pub depends: Vec<String>,
++    pub optdepends: Vec<String>,
++    pub makedepends: Vec<String>,
++    pub checkdepends: Vec<String>,
++    pub conflicts: Vec<String>,
++    pub replaces: Vec<String>,
++    pub provides: Vec<String>,
++    pub backup: Vec<String>,
++}
++
++impl PkgInfo {
++    pub fn new() -> Self {
++        Self {
++            pkgname: None,
++            pkgbase: None,
++            pkgver: None,
++            basever: None,
++            pkgdesc: None,
++            url: None,
++            builddate: None,
++            packager: None,
++            arch: None,
++            pkg_isize: None,
++
++            groups: vec![],
++            licenses: vec![],
++            depends: vec![],
++            optdepends: vec![],
++            makedepends: vec![],
++            checkdepends: vec![],
++            conflicts: vec![],
++            replaces: vec![],
++            provides: vec![],
++            backup: vec![],
++        }
++    }
++
++    pub fn parse_line(self: &mut Self, line: &str) -> bool {
++        let split_line = line.split('=').collect::<Vec<&str>>();
++
++        // Just drop the line, if the line is not pair separated by '='.
++        if split_line.len() != 2 {
++            return false;
++        }
++
++        let key = split_line[0].trim();
++        let value = split_line[1].trim();
++
++        let mut res_status = true;
++        match key {
++            "pkgname" => self.pkgname = Some(value.to_owned()),
++            "pkgbase" => self.pkgbase = Some(value.to_owned()),
++            "pkgver" => self.pkgver = Some(value.to_owned()),
++            "basever" => self.basever = Some(value.to_owned()),
++            "pkgdesc" => self.pkgdesc = Some(value.to_owned()),
++            "group" => self.groups.push(value.to_owned()),
++            "url" => self.url = Some(value.to_owned()),
++            "license" => self.licenses.push(value.to_owned()),
++            "builddate" => self.builddate = Some(value.to_owned()),
++            "packager" => self.packager = Some(value.to_owned()),
++            "arch" => self.arch = Some(value.to_owned()),
++            "size" => self.pkg_isize = Some(value.to_owned()),
++            "depend" => self.depends.push(value.to_owned()),
++            "optdepend" => self.optdepends.push(value.to_owned()),
++            "makedepend" => self.makedepends.push(value.to_owned()),
++            "checkdepend" => self.checkdepends.push(value.to_owned()),
++            "conflict" => self.conflicts.push(value.to_owned()),
++            "replaces" => self.replaces.push(value.to_owned()),
++            "provides" => self.provides.push(value.to_owned()),
++            "backup" => self.backup.push(value.to_owned()),
++            _ => res_status = false,
++        };
++
++        res_status
++    }
++
++    pub fn from_string(content: &String) -> Self {
++        let mut pkginfo = PkgInfo::new();
++
++        let lines =
++            content.lines().into_iter().filter(|line| !(line.is_empty() || line.starts_with('#')));
++        for line in lines {
++            pkginfo.parse_line(line);
++        }
++
++        pkginfo
++    }
++
++    pub fn from_file(file_path: &str) -> Self {
++        let file_content = fs::read_to_string(file_path);
++        if file_content.is_err() {
++            return PkgInfo::new();
++        }
++        PkgInfo::from_string(&file_content.unwrap())
++    }
++
++    pub fn from_archive(file_path: &str) -> Self {
++        let file_archive = File::open(file_path);
++        if file_archive.is_err() {
++            log::error!("could not open file {}: {:?}", file_path, file_archive.err());
++            return PkgInfo::new();
++        }
++        let file_metadata = fs::metadata(file_path);
++        let pkg_isize = format!("{}", file_metadata.unwrap().len());
++
++        let mut pkginfo = PkgInfo::new();
++        pkginfo.pkg_isize = Some(pkg_isize);
++
++        let mut archive_reader = ArchiveReader::open_io(file_archive.unwrap());
++        if archive_reader.is_err() {
++            log::error!("error while reading package  {}: {:?}\n", file_path, archive_reader.err());
++            return PkgInfo::new();
++        }
++        while let Some(entry) = archive_reader.as_mut().unwrap().next_entry().unwrap() {
++            if entry.pathname_utf8().unwrap() != ".PKGINFO" {
++                continue;
++            }
++            let entry_reader = entry.into_reader();
++            let entry_content = std::io::read_to_string(entry_reader).unwrap();
++            for content_line in entry_content.lines() {
++                pkginfo.parse_line(content_line);
++            }
++
++            break;
++        }
++
++        pkginfo
++    }
++}
++
++pub fn list_archive(file_path: &str) -> Vec<String> {
++    let file_archive = File::open(file_path);
++    if file_archive.is_err() {
++        log::error!("could not open file {}: {:?}", file_path, file_archive.err());
++        return vec![];
++    }
++
++    let mut arc_files = vec![];
++
++    let mut archive_reader = ArchiveReader::open_io(file_archive.unwrap());
++    if archive_reader.is_err() {
++        log::error!("error while reading package  {}: {:?}\n", file_path, archive_reader.err());
++        return vec![];
++    }
++    while let Some(entry) = archive_reader.as_mut().unwrap().next_entry().unwrap() {
++        let entry_path = entry.pathname_mb();
++
++        // Ignore if package entry has broken path (that is failed to convert to utf8), or if the
++        // entry starts with '.'.
++        if entry_path.is_err()
++            || entry_path.as_ref().unwrap().to_str().unwrap().to_owned().starts_with('.')
++        {
++            continue;
++        }
++        arc_files.push(entry_path.unwrap().to_str().unwrap().to_owned());
++    }
++
++    arc_files
++}
+diff --git a/scripts/repo-add/src/utils.rs b/scripts/repo-add/src/utils.rs
+new file mode 100644
+index 00000000..693fd0af
+--- /dev/null
++++ b/scripts/repo-add/src/utils.rs
+@@ -0,0 +1,166 @@
++use std::fs::File;
++use std::io::Write;
++use std::{env, fs, io, slice, str};
++
++use md5::Md5;
++use rand::Rng;
++use sha2::Sha256;
++use subprocess::{Exec, Redirection};
++
++#[inline]
++pub const fn const_min(v1: usize, v2: usize) -> usize {
++    if v1 <= v2 {
++        v1
++    } else {
++        v2
++    }
++}
++
++#[inline]
++pub const fn string_substr(src_str: &str, pos: usize, n: usize) -> Result<&str, str::Utf8Error> {
++    let rlen = const_min(n, src_str.len() - pos);
++    let s = unsafe {
++        // First, we build a &[u8]...
++        let slice = slice::from_raw_parts(src_str.as_ptr().add(pos), rlen);
++
++        // ... and then convert that slice into a string slice
++        str::from_utf8(slice)
++    };
++    s
++}
++
++#[inline]
++pub fn get_current_cmdname(cmd_line: &str) -> &str {
++    if let Some(trim_pos) = cmd_line.rfind('/') {
++        return cmd_line.get((trim_pos + 1)..).unwrap();
++    }
++    cmd_line
++}
++
++pub fn write_to_file(filepath: &str, data: &str) -> bool {
++    let file = File::create(&filepath);
++    if file.is_ok() {
++        let _ = file.unwrap().write_all(data.as_bytes());
++        return true;
++    }
++    log::error!("'{}' open failed: {:?}", filepath, file.err());
++    false
++}
++
++pub fn create_temporary_directory(max_tries: Option<u32>) -> Option<String> {
++    let tmp_dir = env::temp_dir();
++    let max_tries = max_tries.unwrap_or(1000);
++
++    let mut i: u32 = 0;
++    let mut rng = rand::thread_rng();
++    loop {
++        let res_path = format!("{}/{}", tmp_dir.to_string_lossy(), rng.gen::<u64>());
++        if fs::create_dir_all(res_path.as_str()).is_ok() {
++            return Some(res_path);
++        }
++        if i == max_tries {
++            return None;
++        }
++        i += 1;
++    }
++}
++
++pub fn exec(command: &str, interactive: Option<bool>) -> (String, bool) {
++    let interactive = interactive.unwrap_or(false);
++    if interactive {
++        let ret_code = Exec::shell(command).join().unwrap();
++        return (String::new(), ret_code.success());
++    }
++    let child_proc = Exec::shell(command).stdout(Redirection::Pipe).capture().unwrap();
++    let mut child_out = child_proc.stdout_str();
++    if child_out.ends_with('\n') {
++        child_out.pop();
++    }
++    (child_out, child_proc.success())
++}
++
++pub fn generate_sha256sum(filepath: &str) -> Option<String> {
++    let mut file_obj = File::open(filepath).unwrap();
++
++    // create a Sha256 hasher instance
++    use sha2::Digest;
++    let mut hasher = Sha256::new();
++    let _ = io::copy(&mut file_obj, &mut hasher);
++
++    // process input message
++    let result = format!("{:x}", hasher.finalize());
++    Some(result)
++}
++
++pub fn generate_md5sum(filepath: &str) -> Option<String> {
++    let mut file_obj = File::open(filepath).unwrap();
++
++    // create a Md5 hasher instance
++    use md5::Digest;
++    let mut hasher = Md5::new();
++    let _ = io::copy(&mut file_obj, &mut hasher);
++
++    // process input message
++    let result = format!("{:x}", hasher.finalize());
++    Some(result)
++}
++
++// This function assumes that given pkg:
++// 1) if is_db_entry=false is `pkgname-version-release.arch.extension`
++// 2) if is_db_entry=true is `pkgname-version-release.arch`
++pub fn get_name_of_pkg(pkg: &str, is_db_entry: bool) -> String {
++    let take_count = if is_db_entry { 2 } else { 3 };
++    let mut pkg = pkg.split('/').filter(|s| !s.is_empty()).last().unwrap().to_string();
++    let work = pkg.split('-').rev().take(take_count).collect::<Vec<_>>().join("-");
++
++    pkg.truncate(pkg.len() - (work.len() + 1));
++    pkg.trim().to_string()
++}
++
++// Retrieve the compression command for an archive extension, or cat for .tar
++pub fn get_compression_command(db_extension: &str) -> String {
++    let fallback_cmd = match db_extension {
++        "tar.gz" => "gzip -c -f -n".to_owned(),
++        "tar.bz2" => "bzip2 -c -f".to_owned(),
++        "tar.xz" => "xz -c -z -".to_owned(),
++        "tar.zst" => "zstd -c -z -q -".to_owned(),
++        "tar.lrz" => "lrzip -q".to_owned(),
++        "tar.lzo" => "lzop -q".to_owned(),
++        "tar.Z" => "compress -c -f".to_owned(),
++        "tar.lz4" => "lz4 -q".to_owned(),
++        "tar.lz" => "lzip -c -f".to_owned(),
++        "tar" => "cat".to_owned(),
++        _ => "".to_owned(),
++    };
++
++    let db_extension = if let Some(strpos) = db_extension.find("tar.") {
++        string_substr(&db_extension, strpos + 4, db_extension.len() - 4).unwrap()
++    } else {
++        ""
++    };
++
++    if db_extension.is_empty() {
++        return fallback_cmd;
++    }
++
++    if let Ok(makepkgconfig_content) = fs::read_to_string("/etc/makepkg.conf") {
++        let temp_compress_cmd = makepkgconfig_content
++            .lines()
++            .into_iter()
++            .filter(|elem| elem.starts_with(&format!("COMPRESS{}", db_extension.to_uppercase())))
++            .last()
++            .unwrap_or("")
++            .split('=')
++            .last()
++            .unwrap_or("")
++            .to_string();
++
++        if temp_compress_cmd.starts_with('(') && temp_compress_cmd.ends_with(')') {
++            return string_substr(&temp_compress_cmd, 1, temp_compress_cmd.len() - 2)
++                .unwrap()
++                .to_owned();
++        }
++    }
++
++    fallback_cmd
++}
+-- 
+2.39.2
+
