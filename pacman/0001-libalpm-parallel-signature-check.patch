@@ -1,4 +1,4 @@
-From a0f3023b1e7636c7949210072b51c187ca9400d9 Mon Sep 17 00:00:00 2001
+From e79399dce2bab36bcf7f2fd7d61a5c955c5dab50 Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
 Date: Sat, 20 Jan 2024 21:54:14 +0400
 Subject: [PATCH 1/1] =?utf-8?q?=F0=9F=9A=A7=20libalpm:=20parallel=20signat?=
@@ -9,11 +9,11 @@ Content-Transfer-Encoding: 8bit
 
 WIP
 ---
- lib/libalpm/sync.c | 133 +++++++++++++++++++++++++++++++++++----------
- 1 file changed, 105 insertions(+), 28 deletions(-)
+ lib/libalpm/sync.c | 224 +++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 176 insertions(+), 48 deletions(-)
 
 diff --git a/lib/libalpm/sync.c b/lib/libalpm/sync.c
-index 4c88e64c..fc6076d8 100644
+index 4c88e64c..9486fd2a 100644
 --- a/lib/libalpm/sync.c
 +++ b/lib/libalpm/sync.c
 @@ -29,6 +29,9 @@
@@ -54,7 +54,133 @@ index 4c88e64c..fc6076d8 100644
  alpm_pkg_t SYMEXPORT *alpm_sync_get_new_version(alpm_pkg_t *pkg, alpm_list_t *dbs_sync)
  {
  	alpm_list_t *i;
-@@ -965,47 +989,36 @@ static int check_keyring(alpm_handle_t *handle)
+@@ -878,25 +902,20 @@ static int key_cmp(const void *k1, const void *k2) {
+ 	return strcmp(key1->keyid, key2);
+ }
+ 
+-static int check_keyring(alpm_handle_t *handle)
++static int keyring_loop(void* data)
+ {
+-	size_t current = 0, numtargs;
+-	alpm_list_t *i, *errors = NULL;
+-	alpm_event_t event;
+-	struct keyinfo_t *keyinfo;
+-
+-	event.type = ALPM_EVENT_KEYRING_START;
+-	EVENT(handle, &event);
+-
+-	numtargs = alpm_list_count(handle->trans->add);
+-
+-	for(i = handle->trans->add; i; i = i->next, current++) {
++	struct thread_struct *th_struct = (struct thread_struct *)data;
++	struct keyinfo_t *keyinfo = NULL;
++	alpm_list_t *i = NULL;
++	for(i = th_struct->trans; i; i = i->next, *th_struct->current += 1) {
+ 		alpm_pkg_t *pkg = i->data;
+ 		int level;
+ 
+-		int percent = (current * 100) / numtargs;
+-		PROGRESS(handle, ALPM_PROGRESS_KEYRING_START, "", percent,
+-				numtargs, current);
++		int percent = (*th_struct->current * 100) / th_struct->total;
++		pthread_mutex_lock(th_struct->err_lock);
++		PROGRESS(th_struct->handle, ALPM_PROGRESS_KEYRING_START, "", percent,
++				th_struct->total, *th_struct->current);
++		pthread_mutex_unlock(th_struct->err_lock);
+ 
+ 		if(pkg->origin == ALPM_PKG_FROM_FILE) {
+ 			continue; /* pkg_load() has been already called, this package is valid */
+@@ -909,21 +928,23 @@ static int check_keyring(alpm_handle_t *handle)
+ 			int ret = alpm_pkg_get_sig(pkg, &sig, &sig_len);
+ 			if(ret == 0) {
+ 				alpm_list_t *keys = NULL;
+-				if(alpm_extract_keyid(handle, pkg->name, sig,
++				if(alpm_extract_keyid(th_struct->handle, pkg->name, sig,
+ 							sig_len, &keys) == 0) {
+ 					alpm_list_t *k;
+ 					for(k = keys; k; k = k->next) {
+ 						char *key = k->data;
+-						_alpm_log(handle, ALPM_LOG_DEBUG, "found signature key: %s\n", key);
+-						if(!alpm_list_find(errors, key, key_cmp) &&
+-								_alpm_key_in_keychain(handle, key) == 0) {
++						_alpm_log(th_struct->handle, ALPM_LOG_DEBUG, "found signature key: %s\n", key);
++						if(!alpm_list_find(*th_struct->errors, key, key_cmp) &&
++								_alpm_key_in_keychain(th_struct->handle, key) == 0) {
+ 							keyinfo = malloc(sizeof(struct keyinfo_t));
+ 							if(!keyinfo) {
+ 								break;
+ 							}
+ 							keyinfo->uid = strdup(pkg->packager);
+ 							keyinfo->keyid = strdup(key);
+-							errors = alpm_list_add(errors, keyinfo);
++							pthread_mutex_lock(th_struct->err_lock);
++							*th_struct->errors = alpm_list_add(*th_struct->errors, keyinfo);
++							pthread_mutex_unlock(th_struct->err_lock);
+ 						}
+ 					}
+ 					FREELIST(keys);
+@@ -932,6 +953,60 @@ static int check_keyring(alpm_handle_t *handle)
+ 			free(sig);
+ 		}
+ 	}
++	return 0;
++}
++
++static int check_keyring(alpm_handle_t *handle)
++{
++	_Atomic(size_t) current = 0;
++	size_t numtargs = 0;
++	alpm_list_t *i, *errors = NULL;
++	alpm_event_t event;
++	struct keyinfo_t *keyinfo;
++	uint32_t thread_count = handle->parallel_downloads;
++	size_t current_thread_index = 0;
++	struct thread_struct *thread_work = NULL;
++	pthread_mutex_t err_lock;
++	int thread_result = 0;
++
++	event.type = ALPM_EVENT_KEYRING_START;
++	EVENT(handle, &event);
++
++	if(pthread_mutex_init(&err_lock, NULL) != 0) {
++		return -1;
++	}
++
++	_alpm_log(handle, ALPM_LOG_DEBUG, "check_keyring: allocating %u threads\n", thread_count);
++	CALLOC(thread_work, thread_count, sizeof(struct thread_struct), return -1);
++
++	for(i = handle->trans->add; i; i = i->next) {
++		thread_work[current_thread_index].trans = alpm_list_add(thread_work[current_thread_index].trans, i->data);
++		current_thread_index = (current_thread_index + 1) % thread_count;
++		++numtargs;
++	}
++	for(uint32_t index = 0; index < thread_count; ++index) {
++		thread_work[index].handle = handle;
++		thread_work[index].current = &current;
++		thread_work[index].errors = &errors;
++		thread_work[index].err_lock = &err_lock;
++		thread_work[index].total = numtargs;
++
++		/* create thread */
++		pthread_create(&thread_work[index].th, NULL, (void*(*)(void*))&keyring_loop,
++				(void*)&thread_work[index]);
++	}
++
++	for(uint32_t index = 0; index < thread_count; ++index) {
++		pthread_join(thread_work[index].th, (void**)&thread_result);
++		_alpm_log(handle, ALPM_LOG_DEBUG, "check_keyring: joined thread %d with result %d\n", index, thread_result);
++	}
++
++	/* release resources used for parallel loop */
++	pthread_mutex_destroy(&err_lock);
++	for(uint32_t index = 0; index < thread_count; ++index) {
++		alpm_list_free(thread_work[index].trans);
++	}
++	FREE(thread_work);
+ 
+ 	PROGRESS(handle, ALPM_PROGRESS_KEYRING_START, "", 100,
+ 			numtargs, current);
+@@ -965,47 +1040,36 @@ static int check_keyring(alpm_handle_t *handle)
  }
  #endif /* HAVE_LIBGPGME */
  
@@ -73,11 +199,11 @@ index 4c88e64c..fc6076d8 100644
 -	uint64_t current_bytes = 0;
 -	alpm_list_t *i, *errors = NULL;
 -	alpm_event_t event;
- 
+-
 -	/* Check integrity of packages */
 -	event.type = ALPM_EVENT_INTEGRITY_START;
 -	EVENT(handle, &event);
--
+ 
 -	for(i = handle->trans->add; i; i = i->next, current++) {
 +static int validity_loop(void* data)
 +{
@@ -119,7 +245,7 @@ index 4c88e64c..fc6076d8 100644
  		} else {
  			alpm_siglist_cleanup(v.siglist);
  			free(v.siglist);
-@@ -1013,6 +1026,70 @@ static int check_validity(alpm_handle_t *handle,
+@@ -1013,6 +1077,70 @@ static int check_validity(alpm_handle_t *handle,
  			v.pkg->validation = v.validation;
  		}
  	}
