@@ -1,4 +1,4 @@
-From 58e6eb968da9e3e147fe85bb2bda3c3372ee1b95 Mon Sep 17 00:00:00 2001
+From a0f3023b1e7636c7949210072b51c187ca9400d9 Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
 Date: Sat, 20 Jan 2024 21:54:14 +0400
 Subject: [PATCH 1/1] =?utf-8?q?=F0=9F=9A=A7=20libalpm:=20parallel=20signat?=
@@ -9,11 +9,11 @@ Content-Transfer-Encoding: 8bit
 
 WIP
 ---
- lib/libalpm/sync.c | 135 +++++++++++++++++++++++++++++++++++----------
- 1 file changed, 107 insertions(+), 28 deletions(-)
+ lib/libalpm/sync.c | 133 +++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 105 insertions(+), 28 deletions(-)
 
 diff --git a/lib/libalpm/sync.c b/lib/libalpm/sync.c
-index 4c88e64c..e3634cd1 100644
+index 4c88e64c..fc6076d8 100644
 --- a/lib/libalpm/sync.c
 +++ b/lib/libalpm/sync.c
 @@ -29,6 +29,9 @@
@@ -54,7 +54,7 @@ index 4c88e64c..e3634cd1 100644
  alpm_pkg_t SYMEXPORT *alpm_sync_get_new_version(alpm_pkg_t *pkg, alpm_list_t *dbs_sync)
  {
  	alpm_list_t *i;
-@@ -965,47 +989,38 @@ static int check_keyring(alpm_handle_t *handle)
+@@ -965,47 +989,36 @@ static int check_keyring(alpm_handle_t *handle)
  }
  #endif /* HAVE_LIBGPGME */
  
@@ -95,10 +95,8 @@ index 4c88e64c..e3634cd1 100644
 +				th_struct->total, *th_struct->current);
 +		pthread_mutex_unlock(th_struct->err_lock);
  		if(v.pkg->origin == ALPM_PKG_FROM_FILE) {
-+			pthread_mutex_unlock(th_struct->err_lock);
  			continue; /* pkg_load() has been already called, this package is valid */
  		}
-+		pthread_mutex_unlock(th_struct->err_lock);
  
 -		current_bytes += v.pkg->size;
 -		v.path = _alpm_filecache_find(handle, v.pkg->filename);
@@ -121,7 +119,7 @@ index 4c88e64c..e3634cd1 100644
  		} else {
  			alpm_siglist_cleanup(v.siglist);
  			free(v.siglist);
-@@ -1013,6 +1028,70 @@ static int check_validity(alpm_handle_t *handle,
+@@ -1013,6 +1026,70 @@ static int check_validity(alpm_handle_t *handle,
  			v.pkg->validation = v.validation;
  		}
  	}
