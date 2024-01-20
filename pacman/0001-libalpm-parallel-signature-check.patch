@@ -1,4 +1,4 @@
-From c0257240296a46b3f85ae47050c0acbfeb5752ff Mon Sep 17 00:00:00 2001
+From 0b9f515fcca5e5d93684ef3b32ed22da515397a8 Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
 Date: Sat, 20 Jan 2024 21:54:14 +0400
 Subject: [PATCH 1/1] =?utf-8?q?=F0=9F=9A=A7=20libalpm:=20parallel=20signat?=
@@ -7,12 +7,13 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=utf-8
 Content-Transfer-Encoding: 8bit
 
+WIP
 ---
- lib/libalpm/sync.c | 126 +++++++++++++++++++++++++++++++++++----------
- 1 file changed, 98 insertions(+), 28 deletions(-)
+ lib/libalpm/sync.c | 130 +++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 102 insertions(+), 28 deletions(-)
 
 diff --git a/lib/libalpm/sync.c b/lib/libalpm/sync.c
-index 4c88e64c..525d2ae0 100644
+index 4c88e64c..bf49cb15 100644
 --- a/lib/libalpm/sync.c
 +++ b/lib/libalpm/sync.c
 @@ -29,6 +29,9 @@
@@ -53,7 +54,7 @@ index 4c88e64c..525d2ae0 100644
  alpm_pkg_t SYMEXPORT *alpm_sync_get_new_version(alpm_pkg_t *pkg, alpm_list_t *dbs_sync)
  {
  	alpm_list_t *i;
-@@ -965,47 +989,34 @@ static int check_keyring(alpm_handle_t *handle)
+@@ -965,47 +989,38 @@ static int check_keyring(alpm_handle_t *handle)
  }
  #endif /* HAVE_LIBGPGME */
  
@@ -89,11 +90,15 @@ index 4c88e64c..525d2ae0 100644
  
 -		PROGRESS(handle, ALPM_PROGRESS_INTEGRITY_START, "", percent,
 -				total, current);
++		pthread_mutex_lock(th_struct->err_lock);
 +		PROGRESS(th_struct->handle, ALPM_PROGRESS_INTEGRITY_START, "", percent,
 +				th_struct->total, *th_struct->current);
++		pthread_mutex_unlock(th_struct->err_lock);
  		if(v.pkg->origin == ALPM_PKG_FROM_FILE) {
++			pthread_mutex_unlock(th_struct->err_lock);
  			continue; /* pkg_load() has been already called, this package is valid */
  		}
++		pthread_mutex_unlock(th_struct->err_lock);
  
 -		current_bytes += v.pkg->size;
 -		v.path = _alpm_filecache_find(handle, v.pkg->filename);
@@ -116,7 +121,7 @@ index 4c88e64c..525d2ae0 100644
  		} else {
  			alpm_siglist_cleanup(v.siglist);
  			free(v.siglist);
-@@ -1013,6 +1024,65 @@ static int check_validity(alpm_handle_t *handle,
+@@ -1013,6 +1028,65 @@ static int check_validity(alpm_handle_t *handle,
  			v.pkg->validation = v.validation;
  		}
  	}
