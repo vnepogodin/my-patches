@@ -1,0 +1,187 @@
+From c0257240296a46b3f85ae47050c0acbfeb5752ff Mon Sep 17 00:00:00 2001
+From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
+Date: Sat, 20 Jan 2024 21:54:14 +0400
+Subject: [PATCH 1/1] =?utf-8?q?=F0=9F=9A=A7=20libalpm:=20parallel=20signat?=
+ =?utf-8?q?ure=20check?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+---
+ lib/libalpm/sync.c | 126 +++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 98 insertions(+), 28 deletions(-)
+
+diff --git a/lib/libalpm/sync.c b/lib/libalpm/sync.c
+index 4c88e64c..525d2ae0 100644
+--- a/lib/libalpm/sync.c
++++ b/lib/libalpm/sync.c
+@@ -29,6 +29,9 @@
+ #include <stdint.h> /* intmax_t */
+ #include <unistd.h>
+ #include <limits.h>
++#include <stdatomic.h>
++#include <pthread.h>
++#include <signal.h>
+ 
+ /* libalpm */
+ #include "sync.h"
+@@ -53,6 +56,27 @@ struct keyinfo_t {
+        char* keyid;
+ };
+ 
++struct thread_struct {
++	alpm_handle_t *handle;
++	alpm_list_t *trans;
++	alpm_list_t **errors;
++	pthread_mutex_t *err_lock;
++	pthread_t th;
++	_Atomic(size_t) *current;
++	_Atomic(uint64_t) *current_bytes;
++	size_t total;
++	uint64_t total_bytes;
++};
++
++struct validity {
++	alpm_pkg_t *pkg;
++	char *path;
++	alpm_siglist_t *siglist;
++	int siglevel;
++	int validation;
++	alpm_errno_t error;
++};
++
+ alpm_pkg_t SYMEXPORT *alpm_sync_get_new_version(alpm_pkg_t *pkg, alpm_list_t *dbs_sync)
+ {
+ 	alpm_list_t *i;
+@@ -965,47 +989,34 @@ static int check_keyring(alpm_handle_t *handle)
+ }
+ #endif /* HAVE_LIBGPGME */
+ 
+-static int check_validity(alpm_handle_t *handle,
+-		size_t total, uint64_t total_bytes)
+-{
+-	struct validity {
+-		alpm_pkg_t *pkg;
+-		char *path;
+-		alpm_siglist_t *siglist;
+-		int siglevel;
+-		int validation;
+-		alpm_errno_t error;
+-	};
+-	size_t current = 0;
+-	uint64_t current_bytes = 0;
+-	alpm_list_t *i, *errors = NULL;
+-	alpm_event_t event;
+-
+-	/* Check integrity of packages */
+-	event.type = ALPM_EVENT_INTEGRITY_START;
+-	EVENT(handle, &event);
+ 
+-	for(i = handle->trans->add; i; i = i->next, current++) {
++static int validity_loop(void* data)
++{
++	struct thread_struct *th_struct = (struct thread_struct *)data;
++	alpm_list_t *i = NULL;
++	for(i = th_struct->trans; i; i = i->next, *th_struct->current += 1) {
+ 		struct validity v = { i->data, NULL, NULL, 0, 0, 0 };
+-		int percent = (int)(((double)current_bytes / total_bytes) * 100);
++		int percent = (int)(((double)*th_struct->current_bytes / th_struct->total_bytes) * 100);
+ 
+-		PROGRESS(handle, ALPM_PROGRESS_INTEGRITY_START, "", percent,
+-				total, current);
++		PROGRESS(th_struct->handle, ALPM_PROGRESS_INTEGRITY_START, "", percent,
++				th_struct->total, *th_struct->current);
+ 		if(v.pkg->origin == ALPM_PKG_FROM_FILE) {
+ 			continue; /* pkg_load() has been already called, this package is valid */
+ 		}
+ 
+-		current_bytes += v.pkg->size;
+-		v.path = _alpm_filecache_find(handle, v.pkg->filename);
++		*th_struct->current_bytes += v.pkg->size;
++		v.path = _alpm_filecache_find(th_struct->handle, v.pkg->filename);
+ 		v.siglevel = alpm_db_get_siglevel(alpm_pkg_get_db(v.pkg));
+ 
+-		if(_alpm_pkg_validate_internal(handle, v.path, v.pkg,
++		if(_alpm_pkg_validate_internal(th_struct->handle, v.path, v.pkg,
+ 					v.siglevel, &v.siglist, &v.validation) == -1) {
+ 			struct validity *invalid;
+-			v.error = handle->pm_errno;
++			v.error = th_struct->handle->pm_errno;
+ 			MALLOC(invalid, sizeof(struct validity), return -1);
+ 			memcpy(invalid, &v, sizeof(struct validity));
+-			errors = alpm_list_add(errors, invalid);
++			pthread_mutex_lock(th_struct->err_lock);
++			*th_struct->errors = alpm_list_add(*th_struct->errors, invalid);
++			pthread_mutex_unlock(th_struct->err_lock);
+ 		} else {
+ 			alpm_siglist_cleanup(v.siglist);
+ 			free(v.siglist);
+@@ -1013,6 +1024,65 @@ static int check_validity(alpm_handle_t *handle,
+ 			v.pkg->validation = v.validation;
+ 		}
+ 	}
++	return 0;
++}
++
++static int check_validity(alpm_handle_t *handle,
++		size_t total, uint64_t total_bytes)
++{
++	_Atomic(size_t) current = 0;
++	_Atomic(uint64_t) current_bytes = 0;
++	alpm_list_t *i, *errors = NULL;
++	alpm_event_t event;
++	uint32_t thread_count = handle->parallel_downloads;
++	size_t current_thread_index = 0;
++	struct thread_struct *thread_work = NULL;
++	pthread_mutex_t err_lock;
++	int thread_result = 0;
++
++	/* Check integrity of packages */
++	event.type = ALPM_EVENT_INTEGRITY_START;
++	EVENT(handle, &event);
++
++	if(pthread_mutex_init(&err_lock, NULL) != 0) {
++		return -1;
++	}
++
++	_alpm_log(handle, ALPM_LOG_DEBUG, "check_validity: allocating %u threads\n", thread_count);
++	CALLOC(thread_work, thread_count, sizeof(struct thread_struct), return -1);
++
++	for(i = handle->trans->add; i; i = i->next) {
++		thread_work[current_thread_index].trans = alpm_list_add(thread_work[current_thread_index].trans, i->data);
++		current_thread_index = (current_thread_index + 1) % thread_count;
++	}
++	for(uint32_t index = 0; index < thread_count; ++index) {
++		thread_work[index].handle = handle;
++		thread_work[index].current = &current;
++		thread_work[index].current_bytes = &current_bytes;
++		thread_work[index].errors = &errors;
++		thread_work[index].err_lock = &err_lock;
++		thread_work[index].total = total;
++		thread_work[index].total_bytes = total_bytes;
++
++		/* create thread */
++		pthread_create(&thread_work[index].th, NULL, (void*(*)(void*))&validity_loop,
++				(void*)&thread_work[index]);
++	}
++
++	for(uint32_t index = 0; index < thread_count; ++index) {
++		pthread_join(thread_work[index].th, (void**)&thread_result);
++		_alpm_log(handle, ALPM_LOG_DEBUG, "check_validity: joined thread %d with result %d\n", index, thread_result);
++		if (thread_result == -1) {
++			for(uint32_t j = index; j < thread_count; ++j) {
++				pthread_kill(thread_work[j].th, SIGKILL);
++				pthread_join(thread_work[j].th, (void**)&thread_result);
++			}
++			pthread_mutex_destroy(&err_lock);
++			return -1;
++		}
++	}
++
++	pthread_mutex_destroy(&err_lock);
+ 
+ 	PROGRESS(handle, ALPM_PROGRESS_INTEGRITY_START, "", 100,
+ 			total, current);
+-- 
+2.43.0
+
