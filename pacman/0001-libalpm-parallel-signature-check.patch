@@ -1,19 +1,18 @@
-From e79399dce2bab36bcf7f2fd7d61a5c955c5dab50 Mon Sep 17 00:00:00 2001
+From 2986268d2bc1e2e5c1812fe9661825888997bd3c Mon Sep 17 00:00:00 2001
 From: Vladislav Nepogodin <nepogodin.vlad@gmail.com>
-Date: Sat, 20 Jan 2024 21:54:14 +0400
+Date: Sat, 27 Jan 2024 01:42:31 +0400
 Subject: [PATCH 1/1] =?utf-8?q?=F0=9F=9A=A7=20libalpm:=20parallel=20signat?=
  =?utf-8?q?ure=20check?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=utf-8
 Content-Transfer-Encoding: 8bit
 
-WIP
 ---
- lib/libalpm/sync.c | 224 +++++++++++++++++++++++++++++++++++----------
- 1 file changed, 176 insertions(+), 48 deletions(-)
+ lib/libalpm/sync.c | 216 +++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 168 insertions(+), 48 deletions(-)
 
 diff --git a/lib/libalpm/sync.c b/lib/libalpm/sync.c
-index 4c88e64c..9486fd2a 100644
+index 4c88e64c..48fe167e 100644
 --- a/lib/libalpm/sync.c
 +++ b/lib/libalpm/sync.c
 @@ -29,6 +29,9 @@
@@ -199,11 +198,11 @@ index 4c88e64c..9486fd2a 100644
 -	uint64_t current_bytes = 0;
 -	alpm_list_t *i, *errors = NULL;
 -	alpm_event_t event;
--
+ 
 -	/* Check integrity of packages */
 -	event.type = ALPM_EVENT_INTEGRITY_START;
 -	EVENT(handle, &event);
- 
+-
 -	for(i = handle->trans->add; i; i = i->next, current++) {
 +static int validity_loop(void* data)
 +{
@@ -245,7 +244,7 @@ index 4c88e64c..9486fd2a 100644
  		} else {
  			alpm_siglist_cleanup(v.siglist);
  			free(v.siglist);
-@@ -1013,6 +1077,70 @@ static int check_validity(alpm_handle_t *handle,
+@@ -1013,6 +1077,62 @@ static int check_validity(alpm_handle_t *handle,
  			v.pkg->validation = v.validation;
  		}
  	}
@@ -297,14 +296,6 @@ index 4c88e64c..9486fd2a 100644
 +	for(uint32_t index = 0; index < thread_count; ++index) {
 +		pthread_join(thread_work[index].th, (void**)&thread_result);
 +		_alpm_log(handle, ALPM_LOG_DEBUG, "check_validity: joined thread %d with result %d\n", index, thread_result);
-+		if (thread_result == -1) {
-+			for(uint32_t j = index; j < thread_count; ++j) {
-+				pthread_kill(thread_work[j].th, SIGKILL);
-+				pthread_join(thread_work[j].th, (void**)&thread_result);
-+			}
-+			pthread_mutex_destroy(&err_lock);
-+			return -1;
-+		}
 +	}
 +
 +	/* release resources used for parallel loop */
